@@ -93,11 +93,14 @@ const Saver = (() => {
   const writers = new Map();
   const failed = new Map();
   let touched = false;
+  // A failed write retries by itself after these delays; only then does the banner ask for help.
+  const AUTO_RETRY_MS = [3000, 10000, 30000];
   const api = {
     status() {
       let busy = false;
       writers.forEach((w) => { if (w.has || w.busy || w.timer) busy = true; });
-      return failed.size ? 'error' : busy ? 'saving' : touched ? 'saved' : 'idle';
+      const stuck = Array.from(failed.values()).some((f) => !f.auto);
+      return stuck ? 'error' : busy || failed.size ? 'saving' : touched ? 'saved' : 'idle';
     },
     put(key, data, fn, delay) {
       touched = true; failed.delete(key);
@@ -112,7 +115,12 @@ const Saver = (() => {
             try {
               while (w.has) {
                 const d = w.latest; w.has = false;
-                try { await w.fn(d); failed.delete(key); } catch (e) { failed.set(key, { data: d, fn: w.fn, err: e }); }
+                try { await w.fn(d); failed.delete(key); w.tries = 0; } catch (e) {
+                  const n = (w.tries = (w.tries || 0) + 1);
+                  const auto = n <= AUTO_RETRY_MS.length && !(e && e.code === 'storage_auth');
+                  failed.set(key, { data: d, fn: w.fn, err: e, auto });
+                  if (auto) setTimeout(() => { const f = failed.get(key); if (f && f.auto && !w.has) api.put(key, f.data, f.fn, 0); }, AUTO_RETRY_MS[n - 1]);
+                }
                 if (typeof updateSaveInd === 'function') updateSaveInd();
               }
             } finally { w.busy = false; if (typeof updateSaveInd === 'function') updateSaveInd(); }
@@ -128,7 +136,7 @@ const Saver = (() => {
     },
     flush() { writers.forEach((w) => { if (w.has && !w.busy) { clearTimeout(w.timer); w.go(); } }); },
     /** Flush, then resolve once every pending write has finished (used before locking). */
-    async settle() { api.flush(); await Promise.all(Array.from(writers.values()).map((w) => w.p)); },
+    async settle() { api.retry(); api.flush(); await Promise.all(Array.from(writers.values()).map((w) => w.p)); },
     async drop(prefix) {
       const ps = [];
       writers.forEach((w, k) => { if (k.startsWith(prefix)) { clearTimeout(w.timer); w.timer = 0; w.has = false; ps.push(w.p); } });

@@ -73,8 +73,17 @@ export function createGithubStore({ token, repo }) {
     return JSON.parse(text);
   }
 
-  async function put(path, value, retried = false) {
-    if (!shas.has(path) && !retried) {
+  // One commit at a time. Every write is a commit on the same branch, and two commits racing
+  // for it make one fail with 409 even when they touch different files.
+  let chain = Promise.resolve();
+  const serial = (fn) => {
+    const p = chain.then(fn, fn);
+    chain = p.catch(() => {});
+    return p;
+  };
+
+  async function put(path, value, attempt = 0) {
+    if (!shas.has(path) && attempt === 0) {
       // learn the sha of an existing file we never read in this session
       const probe = await request('GET', path);
       if (probe.ok) shas.set(path, (await probe.json()).sha);
@@ -84,12 +93,14 @@ export function createGithubStore({ token, repo }) {
       content: toB64(JSON.stringify(value)),
       ...(shas.get(path) ? { sha: shas.get(path) } : {}),
     });
-    if ((res.status === 409 || res.status === 422) && !retried) {
-      // another device wrote meanwhile: last writer wins
+    if ((res.status === 409 || res.status === 422) && attempt < 3) {
+      // another device wrote this file, or another commit won the branch: refresh the sha,
+      // retry (last writer wins)
+      await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
       shas.delete(path);
       const probe = await request('GET', path);
       if (probe.ok) shas.set(path, (await probe.json()).sha);
-      return put(path, value, true);
+      return put(path, value, attempt + 1);
     }
     if (!res.ok) throw fail(`PUT ${path}: ${res.status}`, res.status);
     const out = await res.json();
@@ -119,7 +130,7 @@ export function createGithubStore({ token, repo }) {
         w.dirty = false;
         const waiters = w.waiters;
         w.waiters = [];
-        w.inflight = put(path, w.getValue());
+        w.inflight = serial(() => put(path, w.getValue()));
         try {
           await w.inflight;
           waiters.forEach((x) => x.resolve());
@@ -217,7 +228,7 @@ export function createGithubStore({ token, repo }) {
 
     async deleteText(id) {
       texts.delete(id);
-      await remove(`texts/${id}.json`);
+      await serial(() => remove(`texts/${id}.json`));
       if (!index) await this.listTexts();
       index = index.filter((m) => m.id !== id);
       await saveIndex();
@@ -244,7 +255,7 @@ export function createGithubStore({ token, repo }) {
 
     /** Setup check: proves the token can write to the repo. */
     async checkWrite() {
-      await put('setup.json', { setupAt: new Date().toISOString() });
+      await serial(() => put('setup.json', { setupAt: new Date().toISOString() }));
     },
   };
 }

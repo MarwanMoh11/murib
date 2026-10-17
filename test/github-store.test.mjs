@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createGithubStore } from '../src/platform/github-store.js';
 
 const files = new Map(); // path → { sha, content(base64) }
-let n = 0, puts = 0, conflictOnce = false;
+let n = 0, puts = 0, conflicts = 0, inflight = 0, maxInflight = 0;
 globalThis.fetch = async (url, opts = {}) => {
   const u = new URL(url);
   const json = (status, body) => ({ ok: status < 300, status, json: async () => body, text: async () => JSON.stringify(body) });
@@ -13,9 +13,14 @@ globalThis.fetch = async (url, opts = {}) => {
   assert.equal(opts.headers.Authorization, 'Bearer tok');
   if (method === 'GET') return files.has(path) ? json(200, { sha: files.get(path).sha, encoding: 'base64', content: files.get(path).content }) : json(404, {});
   const body = JSON.parse(opts.body);
+  // Like GitHub: every write is a commit on one branch, and a commit that races another fails.
+  const racing = inflight > 0; inflight++; maxInflight = Math.max(maxInflight, inflight);
+  await new Promise((r) => setTimeout(r, 5));
+  inflight--;
+  if (racing) return json(409, {});
   if (method === 'PUT') {
     puts++;
-    if (conflictOnce) { conflictOnce = false; files.set(path, { ...files.get(path), sha: 'other' + n++ }); return json(409, {}); }
+    if (conflicts > 0) { conflicts--; files.set(path, { ...files.get(path), sha: 'other' + n++ }); return json(409, {}); }
     if (files.has(path) && body.sha !== files.get(path).sha) return json(409, {});
     if (!files.has(path) && body.sha) return json(422, {});
     const sha = 's' + n++;
@@ -48,7 +53,7 @@ const s2 = createGithubStore({ token: 'tok', repo: 'me/data' });
 assert.equal((await s2.listTexts())[0].id, 'tabc');
 const full = await s2.loadText('tabc');
 assert.equal(full.title, '中国外交部长访问埃及');
-conflictOnce = true;
+conflicts = 2; // another device wrote twice meanwhile
 await s2.saveChunk('tabc', 'c2', { S2: { words: [{ w: '访问' }] } });
 assert.ok(decode('texts/tabc.json').analyses.S2);
 await s2.saveSrs({ cards: { 中国: { box: 2, due: 5 } } });
@@ -57,4 +62,5 @@ assert.equal((await s1.loadSrs()).cards['中国'].box, 2);
 await s2.deleteText('tabc');
 assert.ok(!files.has('texts/tabc.json'));
 assert.equal(decode('index.json').texts.length, 0);
+assert.equal(maxInflight, 1, 'writes must never overlap');
 console.log('github-store: all checks passed');
