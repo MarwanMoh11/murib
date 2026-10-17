@@ -6,7 +6,9 @@
 //   profile.json        { known, settings }
 //   srs.json            { cards }
 //
-// Writes are debounced and serialized per file; each write is one commit.
+// Writes are debounced and serialized per file; each write is one commit. Another device or
+// the murib-fix review skill may have changed a file since this session read it: before
+// overwriting texts/*.json or index.json the store folds those changes in (three-way merge).
 
 const API = 'https://api.github.com';
 
@@ -24,8 +26,40 @@ function fromB64(b64) {
 
 const fail = (message, status) => ({ code: status === 401 || status === 403 ? 'storage_auth' : 'storage_failed', message, status });
 
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+/** Per key: what this device changed since `base` wins; everything else takes the remote value. */
+export function merge3(base, local, remote) {
+  base = base || {};
+  local = local || {};
+  remote = remote || {};
+  const out = {};
+  for (const k of new Set([...Object.keys(remote), ...Object.keys(local), ...Object.keys(base)])) {
+    const v = same(local[k], base[k]) ? remote[k] : local[k];
+    if (v !== undefined) out[k] = v;
+  }
+  return out;
+}
+
+/** A text record: field by field, and sentence by sentence inside analyses and chunkState. */
+export function mergeText(base, local, remote) {
+  base = base || {};
+  const out = merge3(base, local, remote);
+  for (const k of ['analyses', 'chunkState']) out[k] = merge3(base[k], local[k], remote[k]);
+  return out;
+}
+
+/** index.json: text by text. */
+export function mergeIndex(base, local, remote) {
+  const byId = (d) => Object.fromEntries(((d && d.texts) || []).map((m) => [m.id, m]));
+  const texts = Object.values(merge3(byId(base), byId(local), byId(remote)));
+  return { texts: texts.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)) };
+}
+
 export function createGithubStore({ token, repo }) {
   const shas = new Map(); // path → last known blob sha
+  const synced = new Map(); // path → JSON last read from or written to GitHub (the merge base)
+  const seen = new Map(); // text id → the record as the app last loaded or sent it
   const texts = new Map(); // id → full record (session cache)
   let index = null; // [meta]
   let profileCache = null;
@@ -60,7 +94,6 @@ export function createGithubStore({ token, repo }) {
     }
     if (!res.ok) throw fail(`GET ${path}: ${res.status}`, res.status);
     const meta = await res.json();
-    shas.set(path, meta.sha);
     let text;
     if (meta.encoding === 'base64' && meta.content) {
       text = fromB64(meta.content);
@@ -70,7 +103,10 @@ export function createGithubStore({ token, repo }) {
       if (!raw.ok) throw fail(`GET raw ${path}: ${raw.status}`, raw.status);
       text = await raw.text();
     }
-    return JSON.parse(text);
+    const value = JSON.parse(text);
+    shas.set(path, meta.sha);
+    synced.set(path, JSON.stringify(value));
+    return value;
   }
 
   // One commit at a time. Every write is a commit on the same branch, and two commits racing
@@ -82,29 +118,46 @@ export function createGithubStore({ token, repo }) {
     return p;
   };
 
-  async function put(path, value, attempt = 0) {
-    if (!shas.has(path) && attempt === 0) {
-      // learn the sha of an existing file we never read in this session
+  function mergerFor(path) {
+    if (path === 'index.json') return { merge: mergeIndex, apply: (v) => { index = v.texts; } };
+    const m = /^texts\/(.+)\.json$/.exec(path);
+    return m && { merge: mergeText, apply: (v) => texts.set(m[1], v) };
+  }
+
+  /** Learn the current sha; for texts and the index also fold in what changed there. → value to write */
+  async function catchUp(path, value) {
+    const m = mergerFor(path);
+    shas.delete(path);
+    if (!m) {
       const probe = await request('GET', path);
       if (probe.ok) shas.set(path, (await probe.json()).sha);
+      return value;
     }
+    const base = synced.has(path) ? JSON.parse(synced.get(path)) : null;
+    const remote = await read(path);
+    if (!remote) return value;
+    const merged = m.merge(base, value, remote);
+    m.apply(merged);
+    return merged;
+  }
+
+  async function put(path, value, attempt = 0) {
+    if (!shas.has(path) && attempt === 0) value = await catchUp(path, value); // a file we never read here
+    const json = JSON.stringify(value);
     const res = await request('PUT', path, {
       message: `murib: save ${path}`,
-      content: toB64(JSON.stringify(value)),
+      content: toB64(json),
       ...(shas.get(path) ? { sha: shas.get(path) } : {}),
     });
     if ((res.status === 409 || res.status === 422) && attempt < 3) {
-      // another device wrote this file, or another commit won the branch: refresh the sha,
-      // retry (last writer wins)
+      // another device or the review skill wrote this file, or another commit won the branch
       await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
-      shas.delete(path);
-      const probe = await request('GET', path);
-      if (probe.ok) shas.set(path, (await probe.json()).sha);
-      return put(path, value, attempt + 1);
+      return put(path, await catchUp(path, value), attempt + 1);
     }
     if (!res.ok) throw fail(`PUT ${path}: ${res.status}`, res.status);
     const out = await res.json();
     shas.set(path, out.content && out.content.sha);
+    synced.set(path, json);
   }
 
   async function remove(path) {
@@ -206,13 +259,28 @@ export function createGithubStore({ token, repo }) {
     },
 
     async loadText(id) {
-      return clone(await ensureText(id));
+      const t = await ensureText(id);
+      if (t) seen.set(id, clone(t));
+      return clone(t);
     },
 
     async saveTextMeta(text) {
-      const cur = texts.get(text.id) || {};
-      const next = { ...cur, ...clone(text), analyses: (cur.analyses && { ...cur.analyses, ...(text.analyses || {}) }) || clone(text.analyses) || {} };
+      const incoming = clone(text);
+      const cur = texts.get(text.id);
+      const prev = seen.get(text.id) || {};
+      // Apply only what the app changed since it loaded or last sent this text: its copy can be
+      // older than ours when another device or the review skill wrote in between.
+      const next = { ...(cur || {}) };
+      for (const [k, v] of Object.entries(incoming)) {
+        if (k === 'analyses') continue;
+        if (k === 'chunkState' && v && typeof v === 'object') {
+          next.chunkState = { ...(next.chunkState || {}) };
+          for (const [c, st] of Object.entries(v)) if (!cur || !same(st, prev.chunkState && prev.chunkState[c])) next.chunkState[c] = st;
+        } else if (!cur || !same(v, prev[k])) next[k] = v;
+      }
+      next.analyses = { ...(next.analyses || {}), ...(incoming.analyses || {}) };
       texts.set(text.id, next);
+      seen.set(text.id, { ...prev, ...incoming });
       upsertMeta(next);
       await Promise.all([schedule(`texts/${text.id}.json`, () => texts.get(text.id)), saveIndex()]);
     },

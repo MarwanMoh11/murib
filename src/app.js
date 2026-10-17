@@ -71,16 +71,17 @@ const MOCK = {
 
 
 // ───────────── profile / srs defaults ─────────────
-// tier: 'smart' = Sonnet 5.5 (default, for anything studied from), 'fast' = Haiku 5.5 (cheaper, less exact).
-const defaultProfile = () => ({ known: [], settings: { tier: 'smart', showPinyin: true } });
+// tier: 'fast' = Haiku 5.5 (default: a quick first pass that Opus 5.5 then corrects with the
+// murib-fix skill in Claude Code), 'smart' = Sonnet 5.5 (slower and pricier, more exact).
+const defaultProfile = () => ({ known: [], settings: { tier: 'fast', showPinyin: true } });
 const defaultSrs = () => ({ cards: {} });
 function normProfile(p) {
   const d = defaultProfile();
   p = p && typeof p === 'object' ? p : {};
   const s = Object.assign({}, d.settings, p.settings || {});
-  // Older versions saved 'best' (Opus) and 'fast' (Sonnet): both become today's default.
-  if (s.tier !== 'smart' && s.tier !== 'fast') s.tier = 'smart';
-  if (!p.settings || !p.settings.modelV2) { s.tier = 'smart'; s.modelV2 = true; }
+  if (s.tier !== 'smart' && s.tier !== 'fast') s.tier = 'fast';
+  // Once, when Haiku became the default: every older saved choice moves to it.
+  if (!p.settings || !p.settings.modelV3) { s.tier = 'fast'; s.modelV3 = true; }
   return { known: Array.isArray(p.known) ? p.known.filter((x) => typeof x === 'string') : [], settings: s };
 }
 
@@ -547,6 +548,7 @@ async function runChunk(t, id, { force = false, signal } = {}) {
     if (!Object.keys(res.analyses).length) throw { code: 'invalid_json', message: 'empty' };
     Object.assign(t.analyses, res.analyses);
     cs.status = 'done'; cs.error = ''; cs.warnings = res.warnings;
+    cs.reviewedAt = 0; cs.reviewedBy = ''; cs.changes_ar = []; // a new analysis has not been reviewed
     saveChunkDoc(t, id, res.analyses);
   } catch (e) {
     if (isCancel(e)) { cs.status = 'pending'; cs.error = ''; } else { cs.status = 'error'; cs.error = errMsg(e); }
@@ -589,7 +591,7 @@ async function reviewChunk(t, id) {
     Object.assign(t.analyses, res.analyses);
     const cs = t.chunkState[id];
     cs.warnings = res.warnings.filter((w) => !(w.kind === 'missing' && t.analyses[w.id]));
-    cs.changes_ar = res.changes_ar; cs.reviewedAt = now();
+    cs.changes_ar = res.changes_ar; cs.reviewedAt = now(); cs.reviewedBy = 'Sonnet 5.5';
     saveChunkDoc(t, id, pickAnalyses(t, sentences));
     persistMeta(t);
   } catch (e) { if (!isCancel(e)) S.reviewErr[key] = errMsg(e); }
@@ -874,7 +876,8 @@ function sentCard(t, s, lab, starts, idx, n) {
   const pats = a.patterns.length ? `<section class="sect"><h3>تراكيب مهمة</h3>${a.patterns.map(patternHtml).join('')}</section>` : '';
   const notes = a.notes_ar.length || warns ? `<section class="sect"><h3>ملاحظات</h3><ul class="dots">${a.notes_ar.map((x) => `<li><span>${esc(x)}</span></li>`).join('')}</ul>${warns}</section>` : '';
   const changes = (cs.changes_ar || []).filter((c) => !/\bS\d+\b/.test(c) || new RegExp('\\b' + s.id + '\\b').test(c));
-  const reviewed = cs.reviewedAt ? `<div class="reviewed"><b>${ICON.check} تم التدقيق</b>${changes.length ? `<ul class="plain">${changes.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>` : ' — لا أخطاء'}</div>` : '';
+  const reviewed = cs.reviewedAt ? `<div class="reviewed"><b>${ICON.check} تم التدقيق${cs.reviewedBy ? ` (${esc(cs.reviewedBy)})` : ''}</b>${changes.length ? `<ul class="plain">${changes.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>` : ' — لا أخطاء'}</div>`
+    : cs.status === 'done' && !t.isSample ? `<p class="reviewed todo">تحليل أوّلي — لم يُدقَّق بعد.</p>` : '';
   const rerr = S.reviewErr[key] ? `<p class="err" role="alert">${esc(S.reviewErr[key])}</p>` : '';
   const busy = S.reviewing.has(key); const run = cs.status === 'running';
   const actions = claudeOnly(`<div class="actions"><button class="btn primary" id="ask-${s.id}" data-act="askSent" data-id="${t.id}" data-sid="${s.id}">${ICON.chat}<span>اسأل عن هذه الجملة</span></button>${t.isSample ? '' : `<button class="btn" id="rev-${s.id}" data-act="review" data-id="${t.id}" data-c="${chunk.id}" ${busy || run ? 'disabled' : ''}>${busy ? 'جاري التدقيق…' : 'دقّق'}</button>`}</div>${t.isSample ? '' : `<div class="actions-2"><button class="btn ghost sm" id="reanalyze-${s.id}" data-act="reanalyze" data-id="${t.id}" data-c="${chunk.id}" ${busy || run ? 'disabled' : ''}>أعد التحليل</button></div>`}`);
@@ -1220,8 +1223,8 @@ function settingsSheetHtml() {
     ? `<div class="confirm" role="alert"><span>مسح كل الكلمات المعروفة؟</span><button class="btn danger sm" id="reset-yes" data-act="resetYes">نعم، امسح</button><button class="btn ghost sm" id="reset-no" data-act="confirmNo">إلغاء</button></div>`
     : `<button class="btn" id="reset-known" data-act="resetAsk">إعادة ضبط الكلمات المعروفة</button>`;
   return `<h3>الإعدادات</h3><div class="lbl">النموذج</div>
-    <div class="seg col2" role="group" aria-label="النموذج">${tierBtn('smart', 'Sonnet 5.5 — دقيق (افتراضي)')}${tierBtn('fast', 'Haiku 5.5 — أسرع وأرخص، أقل دقة')}</div>
-    <p class="muted">التدقيق «دقّق» يستخدم Sonnet 5.5 دائمًا بتفكير أعمق.</p>
+    <div class="seg col2" role="group" aria-label="النموذج">${tierBtn('fast', 'Haiku 5.5 — سريع ورخيص (افتراضي)')}${tierBtn('smart', 'Sonnet 5.5 — أدق، أبطأ وأغلى')}</div>
+    <p class="muted">التحليل الأوّلي سريع، ثم يدقّقه Opus 5.5 من Claude Code. زر «دقّق» يستخدم Sonnet 5.5.</p>
     <div class="lbl">المظهر</div>
     <div class="seg col2" role="group" aria-label="المظهر">${themeBtn('dark', 'داكن')}${themeBtn('light', 'فاتح')}</div>
     <label class="chk big" for="set-py"><input type="checkbox" id="set-py" data-change="setPinyin" ${st.showPinyin ? 'checked' : ''}><span>إظهار النطق (pinyin) افتراضيًا</span></label>

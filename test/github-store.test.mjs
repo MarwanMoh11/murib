@@ -59,8 +59,34 @@ assert.ok(decode('texts/tabc.json').analyses.S2);
 await s2.saveSrs({ cards: { 中国: { box: 2, due: 5 } } });
 assert.equal((await s1.loadSrs()).cards['中国'].box, 2);
 
+// The review skill fixes S1 and the overview while s2 holds an older copy; another device
+// adds a text. s2's next saves must keep all of that and change only what s2 changed.
+const write = (p, v) => files.set(p, { sha: 'x' + n++, content: Buffer.from(JSON.stringify(v)).toString('base64') });
+const fixed = decode('texts/tabc.json');
+fixed.analyses.S1 = { words: [{ w: '中国' }], translation_ar: 'مصحَّح' };
+fixed.chunkState = { c1: { status: 'done', reviewedAt: 9, reviewedBy: 'Opus 5.5' } };
+fixed.overview = { tips_ar: ['مصحَّح'] };
+write('texts/tabc.json', fixed);
+write('index.json', { texts: [...decode('index.json').texts, { id: 'tnew', title: 'جديد', updatedAt: 0 }] });
+const stale = { ...full, chunkState: { ...full.chunkState, c2: { status: 'done' } }, updatedAt: 50 };
+delete stale.analyses;
+await s2.saveChunk('tabc', 'c2', { S2: { words: [{ w: '访问' }, { w: '了' }] } });
+await s2.saveTextMeta(stale);
+const merged = decode('texts/tabc.json');
+assert.equal(merged.analyses.S1.translation_ar, 'مصحَّح', 'the skill fix survives');
+assert.equal(merged.analyses.S2.words.length, 2, 'the local change lands');
+assert.equal(merged.chunkState.c1.reviewedBy, 'Opus 5.5');
+assert.equal(merged.chunkState.c2.status, 'done');
+assert.deepEqual(merged.overview, { tips_ar: ['مصحَّح'] });
+assert.equal(merged.updatedAt, 50);
+assert.ok(decode('index.json').texts.some((m) => m.id === 'tnew'), 'the other device\'s text stays listed');
+// a later save from the same stale copy still leaves the fixes alone
+await s2.saveTextMeta({ ...stale, title: 'عنوان جديد' });
+assert.equal(decode('texts/tabc.json').chunkState.c1.reviewedBy, 'Opus 5.5');
+assert.equal(decode('texts/tabc.json').title, 'عنوان جديد');
+
 await s2.deleteText('tabc');
 assert.ok(!files.has('texts/tabc.json'));
-assert.equal(decode('index.json').texts.length, 0);
+assert.deepEqual(decode('index.json').texts.map((m) => m.id), ['tnew']);
 assert.equal(maxInflight, 1, 'writes must never overlap');
 console.log('github-store: all checks passed');

@@ -292,6 +292,7 @@ rt { display: block; font: 400 10.5px/1.2 var(--f-py); color: var(--ink-2); }
 .reviewed { margin-top: 12px; padding: 8px 12px; border-radius: 8px; background: var(--surface-2); font-size: 14px; }
 .reviewed b { display: inline-flex; align-items: center; gap: 4px; }
 .reviewed .ic { width: 16px; height: 16px; }
+.reviewed.todo { background: none; padding: 0 2px; color: var(--ink-2); font-size: 13px; }
 .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
 .actions .btn { flex: 1; }
 .actions .btn.primary { flex: 1.7; }

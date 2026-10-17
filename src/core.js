@@ -6,7 +6,7 @@
 (function (root) {
   'use strict';
 
-  const PROMPT_VERSION = 1;
+  const PROMPT_VERSION = 2;
 
   // ───────────── Text utilities ─────────────
 
@@ -428,13 +428,14 @@
    "irab": one short Arabic i'rab line, "mean": Arabic meaning in this context}
 
 SEGMENTATION
-- Split as a good Chinese dictionary would (办事 / 方式; 规章制度 stays one word). 成语 and fixed four-character expressions stay one word (不可估量, 伤痕累累, 草草了事).
+- Split as a good Chinese dictionary would (办事 / 方式; 规章制度 stays one word). Real 成语 — four-character idioms listed in a 成语 dictionary (不可估量, 伤痕累累, 草草了事) — stay one word with pos_zh 成语. Other phrases are split into their words, and pos_zh 成语 is never used for them (发自内心 is 发自 / 内心; 终身大事 is 终身 / 大事).
+- An adverb and the verb after it are two words (就 / 像, 都 / 是); 这/那/哪 and a following measure word are two words (这 / 种, 那 / 种). Split the same string the same way every time it appears in the text.
 - Separate words: the particles 的 地 得 了 着 过 所 吗 呢 吧; the negators 不 没 别 (but keep lexicalized words whole: 不论, 不要, 不过, 不但); a numeral and its measure word (一 / 份); a verb and a following 了.
 - Keep 们 attached (朋友们). Keep proper nouns and titles whole, without 《》 (金字塔报).
 - No punctuation inside words. Never correct the printed text, even an obvious typo: analyze what is printed and give the likely intended word in notes_ar.
 
 PINYIN ("py")
-- Tone marks (ā á ǎ à, ǖ ǘ ǚ ǜ), never tone numbers. Syllables of one word written together (jīntiān, bànshì); a four-character expression in two halves (bùkě gūliáng).
+- Tone marks (ā á ǎ à, ǖ ǘ ǚ ǜ), never tone numbers. Syllables of one word written together (jīntiān, bànshì); a four-character expression in two halves (bùkě gūliàng).
 - Neutral tone unmarked (de, le, zhe, men, xǐhuan). Proper nouns capitalized and written by Hanyu Pinyin orthography, proper part and generic part apart (Zhōngguó, Āijí, Jīnzìtǎ Bào, Běijīng Shì).
 - 一 and 不 take the tone actually spoken, as Chinese textbooks mark it (bú shì, bú yào, yí gè, yìqǐ, yídìng); every other character keeps its dictionary tone (do not mark third-tone sandhi).
 - Polyphonic characters: pick the reading that fits the context — 地 de/dì, 得 de/dé/děi, 了 le/liǎo, 着 zhe/zháo/zhuó, 为 wèi/wéi, 都 dōu/dū, 长 cháng/zhǎng, 行 xíng/háng, 重 zhòng/chóng, 还 hái/huán, 只 zhǐ/zhī, 种 zhǒng/zhòng, 处 chù/chǔ, 好 hǎo/hào, 要 yào/yāo, 分 fēn/fèn, 当 dāng/dàng, 将 jiāng/jiàng, 相 xiāng/xiàng, 觉 jué/jiào, 发 fā/fà, 便 biàn/pián, 数 shù/shǔ, 调 diào/tiáo, 传 chuán/zhuàn, 结 jié/jiē, 量 liàng/liáng, 少 shǎo/shào, 似 sì/shì. When the choice is a classic trap, add a note in notes_ar.
@@ -448,13 +449,16 @@ I'RAB — the Arabic grammar terms this class uses
 "role" is the Arabic term the student writes (a short qualifier in parentheses is fine):
 - 主语 → «مبتدأ». Arabic reads «我分享…» like «أنا أشاركُ…»: the subject is the مبتدأ and the verb clause is its خبر.
 - 谓语 → «خبر»: «خبر (فعل)» for the main verb, «خبر (صفة)» for an adjective predicate, «خبر (فعل الكينونة)» for 是. A second verb phrase sharing the same subject (连谓: 写了…，谈到了…; 带着…) → «خبر ثانٍ (فعل)»; if your translation renders it as a حال (حاملًا), say so in irab. Auxiliary verbs (能、会、要、必须、可以、应该、能够) → «فعل مساعد» with role_zh 状语.
-- 宾语 → «مفعول به» (the object of a verb). The object of a preposition (在、对、给、跟、与、向、为了、关于、把、被、从) → «اسم مجرور», role_zh of the prepositional phrase: 状语, or 定语 when it modifies a noun (关于中东的文章).
+- 去/来 before another verb (去工作، 不要去做، 去帮他، 来看) means setting out to do it, not physical movement: 去/来 is «خبر (فعل)» with "mean" «[الإقدام على الفعل]», and the verb after it is «خبر ثانٍ (فعل)» (连谓) — never «مفعول به». 去/来 means "go/come" only when a place follows or is implied (去北京).
+- 宾语 → «مفعول به» (the object of a verb). Exception: the noun, pronoun or phrase after 是 is «خبر الكينونة» (role_zh 宾语), never «مفعول به». The object of a preposition (在、对、给、跟、与、向、为了、关于、把、被、从) → «اسم مجرور», role_zh of the prepositional phrase: 状语, or 定语 when it modifies a noun (关于中东的文章).
+- 把 + N + verb: N is «اسم مجرور» (role_zh 状语); its irab says it is the verb's object moved before it, e.g. «اسم مجرور بـ«把»، وهو في المعنى مفعول به للفعل «当成» تقدّم عليه». The 把-phrase is «شبه جملة (جار ومجرور) متعلق بالفعل», never «حال».
 - 定语 → «صفة» for a descriptive modifier; «مضاف إليه» for a possessor (我的، 学生的، 中国的 meaning "China's"); numerals «عدد»; measure words «كلمة قياس»; 这/那 «اسم إشارة».
 - 状语 → «حال» (manner: 自发地، 全面), «ظرف زمان» (今天، 昨晚، 已经، 将来), «ظرف مكان», «ظرف» (degree, scope, frequency: 很، 最، 都، 也، 就، 才، 始终), «أداة نفي» (不، 没、别), «حرف جر» for the preposition itself. In 在……中/上/里/下 the noun is «اسم مجرور» and 中/上/里/下 is «اسم مكان (يكمل حرف الجر)», all with role_zh 状语.
-- 补语 → «مكمّل» with its type: (نتيجة 结果), (اتجاه 趋向), (درجة 程度), (إمكان 可能), (مدة/عدد 时量/动量).
-- 兼语 → «مفعول به وفاعل» — the noun after 让/叫/使/请 that is the object of that verb and the subject of the next one.
+- 补语 → «مكمّل» with its type: (نتيجة 结果) only for a verb or adjective attached straight to the verb with no 得 (做完، 看懂); (حال/درجة 情态/程度) for what follows 得 (累得身心疲惫، 说得很好); (اتجاه 趋向), (إمكان 可能), (مدة/عدد 时量/动量). The role and the irab name the same type.
+- 兼语 → «مفعول به وفاعل» — the noun after 让/叫/使/请/托/派/要求/鼓励/劝 that is the object of that verb and the subject of the next one. The verb after it is «خبر (فعل) لـ«N»» (N = that noun), role_zh 谓语 — not «خبر ثانٍ», which is only for verbs sharing the sentence's own subject.
 - 关联词 → «أداة ربط» (不论، 只有、而且、但، 因为، 所以، 而، 然后، 即، 进而). Explain paired connectors in "patterns".
-- 助词 → «أداة» with its function: 的 «أداة الصفة/الإضافة», 地 «أداة الحال», 得 «أداة المكمّل», 了/过 «أداة الماضي/التجربة», 着 «أداة الاستمرار», 吗/呢/吧 «أداة استفهام/تقرير», 所 «أداة (مع 被)».
+- 助词 → «أداة» with its function: 的 «أداة الصفة/الإضافة», 地 «أداة الحال», 得 «أداة المكمّل», 着 «أداة الاستمرار», 过 «أداة التجربة», 吗/呢/吧 «أداة استفهام/تقرير», 所 «أداة (مع 被)». 了 has two uses — decide which before you label it: right after a verb, «أداة الإتمام» (a completed action, usually rendered in the past); at the end of a sentence or clause, «أداة تغيّر الحال» (a new situation has come about: 天黑了 «حلّ الظلام», 就失去意义了 «فعندئذٍ يفقد الأمر معناه») — this 了 is not a past-tense marker.
+- 是……的 is only the emphatic frame around a predicate (他是昨天来的، 这是可以理解的). When 的 closes a clause that describes a following noun (我认为是最有效的方式), that 的 is «أداة الصفة» and there is no 是……的.
 - 独立语 → «جملة اعتراضية» — inserted words outside the main structure (你看، 看来، 总之).
 - A给B的N (中国主席给埃及总统的信件): 给 is the verb of the 的-clause («خبر (فعل)» inside it), A its «مبتدأ», B «مفعول به»; the whole clause is «صفة» of N.
 Give each word the role it has inside the smallest clause that contains it; when that clause is itself part of a bigger one (an object clause, a 的-clause before a noun), say so in "irab".
@@ -465,16 +469,18 @@ Give each word the role it has inside the smallest clause that contains it; when
 
 TRANSLATION
 "translation_ar" — the exam answer: faithful first, then fluent formal Arabic (فصحى).
-- Render every element: subject, tense and aspect (了 completed → past; 已经 → «قد» + past; 将/将来 → «سـ/سوف» or «في المستقبل»; 正在 → ongoing present), negation and its scope, degree words (很، 最، 绝对، 始终، 千万), numbers and quantities, every modifier.
+- Render every element: subject, tense and aspect (verb + 了 completed → usually past; sentence-final 了 → a change of state, rendered with «صار/أصبح/عندئذٍ» in whatever tense the context needs; 已经 → «قد» + past; 将/将来 → «سـ/سوف» or «في المستقبل»; 正在 → ongoing present), negation and its scope, degree words (很، 最، 绝对، 始终، 千万), numbers and quantities, every modifier.
+- Negation: 不 negates the present, habits, wishes and the future → «لا» / «لن» (a past habit or state: «لم يكن + مضارع»); 没/没有 negates an action that did not happen → «لم». Never translate 不 as «لم» + past.
 - Add nothing that is not in the Chinese; no explanations inside the translation. One exception: when an Arabic pronoun would point to the wrong person, name the referent instead (他 → «الرئيس الصيني») and say so in notes_ar.
 - With no aspect marker, take the tense from the context (a news report narrates in the past; 写道 → «كتب»).
 - Proper nouns and institutions: the established Arabic name, never a literal one (《金字塔报》 → صحيفة «الأهرام»; 外交部长 → وزير الخارجية; 中国国家主席 → الرئيس الصيني; 埃及总统 → الرئيس المصري). Follow the glossary exactly.
 - Correct grammar, agreement, hamzas and taa marbuta; natural Arabic order (start with the verb where Arabic prefers it); titles in «». No full diacritics — add a mark only where it prevents ambiguity.
 - Measure words and particles are expressed through Arabic structure, not translated as separate words.
-"mean" (per word) — the meaning in THIS context, 1–4 Arabic words, in the form used in your translation_ar (实现 → «تحقيق» if the translation says «تحقيق السلام»); for a particle give its function in brackets, e.g. «[أداة الماضي]», «[أداة الإضافة]». Joined in order, the "mean" values form the student's word-by-word gloss.
+"mean" (per word) — the meaning in THIS context, 1–4 Arabic words, in the form used in your translation_ar (实现 → «تحقيق» if the translation says «تحقيق السلام»); for a particle give its function in brackets, e.g. «[أداة الإتمام]», «[أداة الإضافة]». Joined in order, the "mean" values form the student's word-by-word gloss.
 
 "patterns" — grammar patterns and connectors in this sentence the student must learn: paired connectors (不论…都…، 只有…才…، 因为…而…), 被 and 被…所…, 把, 是…的, 在…下, 让/使 + verb, comparisons, verb–complement constructions, set phrases. Each: {"zh": the pattern with …… for the gaps, "py": its pinyin, "ar": Arabic equivalent(s), "explain_ar": how it works in 1–2 sentences, "example_zh": a NEW short example sentence (not from the text), "example_ar": its Arabic translation, "emphasized": true if it matches handout-emphasized text}. Empty array if none.
-"notes_ar" — 0–4 short Arabic notes on traps: polyphones, a word whose usual dictionary meaning is wrong here, a likely typo in the source, a translation choice. Empty array if nothing important.`;
+"notes_ar" — 0–4 short Arabic notes on traps: polyphones, a word whose usual dictionary meaning is wrong here, a likely typo in the source, a translation choice. Empty array if nothing important.
+- Only state what you are sure of. Call the source a typo only when the printed form is not a real word or makes the sentence ungrammatical — a rarer but correct word (托 = يُوكِل) is not a typo. Never call a printed word redundant (زائدة) when the sentence reads correctly with it (不是因为… = «ليس لأن…»). No general claims about Arabic grammar you cannot back (Arabic needs no linking word between مبتدأ and خبر).`;
 
   const EXAMPLE = JSON.stringify({
     sentences: [
@@ -506,7 +512,8 @@ TRANSLATION
 2. The "parts" texts joined equal it too.
 3. Every polyphonic character has the reading that fits this context; 一 and 不 carry their spoken tones.
 4. Read your translation against the Chinese clause by clause: nothing missing, nothing added, tense and negation right, glossary names used, Arabic grammar and spelling correct.
-5. Every EMPHASIZED item is covered in "patterns" (or in notes_ar if it is a plain word).`;
+5. Every EMPHASIZED item is covered in "patterns" (or in notes_ar if it is a plain word).
+6. Each word's role, irab and mean agree with each other and with the translation. Recheck every 了 (completion or change of state), 是 and the word after it, 把, 去/来 + verb, 兼语 verbs, 得 complements and every 不.`;
 
   /**
    * Analyze one chunk.
@@ -574,7 +581,7 @@ ${JSON.stringify(first)}
 THE RULES BOTH EXAMINERS FOLLOW:
 ${RULES}
 
-Check especially: pinyin of polyphones and of 一/不; words that do not reproduce the printed sentence exactly; wrong role or i'rab, including what a word attaches to; meanings that do not fit the context; translation errors (missing or added meaning, tense, negation scope, proper-noun names, Arabic grammar and spelling); wrong or missing patterns for EMPHASIZED items. Keep everything that is already correct exactly as it is — do not rephrase for style. If a sentence is missing from the first analysis, write it in full.
+Check especially: every 了 (completion or change of state), the word after 是, 把, 去/来 + verb, 兼语 verbs, 得 complements, 不 translated as past, and unfounded typo or «زائدة» claims; pinyin of polyphones and of 一/不; words that do not reproduce the printed sentence exactly; wrong role or i'rab, including what a word attaches to; meanings that do not fit the context; translation errors (missing or added meaning, tense, negation scope, proper-noun names, Arabic grammar and spelling); wrong or missing patterns for EMPHASIZED items. Keep everything that is already correct exactly as it is — do not rephrase for style. If a sentence is missing from the first analysis, write it in full.
 
 OUTPUT — reply with only this JSON, no markdown fences:
 {"changes_ar":["one short Arabic line per correction, e.g. «S2: نطق 地 هنا de وليس dì»"],"sentences":[the complete corrected analysis, same shape and ids]}
@@ -600,7 +607,8 @@ Reply with only this JSON, no markdown fences:
 - "main_idea_ar": the main idea in 2–3 Arabic sentences. "purpose_ar": the author's purpose or stance in one Arabic sentence.
 - "paragraphs": one entry per numbered paragraph, same numbers, the idea of each in one Arabic sentence.
 - "glossary": every proper noun (people, countries, cities, institutions, newspapers, titles of office) and every key term that repeats or has a fixed Arabic equivalent, with the exact Arabic wording the translation must use everywhere — established Arabic names, never literal ones (《金字塔报》 → صحيفة «الأهرام»). "py" in tone marks. "note_ar" only when it helps, else "". Up to 15 entries, most important first.
-- "tips_ar": 3–6 short Arabic tips specific to THIS text for the exam: translation traps, repeated structures, tense, names.`;
+- "tips_ar": 3–6 short Arabic tips specific to THIS text for the exam: translation traps, repeated structures, tense, names.
+- Write in Arabic, quoting Chinese only as it is printed in the text — never mix English or pinyin into a Chinese quote. Do not count how often a word appears unless you counted it in the text. Call something a typo only when the printed form is not a real word or is ungrammatical (托 = يُوكِل is a real verb). Glossary "py": dictionary pinyin with tone marks, syllables of a word together, a four-character expression in two halves (bùkě gūliàng).`;
   }
 
   /** OCR of one photo (pass the image in options.images). Reply → normalizeOcr(reply). */
