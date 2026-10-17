@@ -40,7 +40,11 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
-body { margin: 0; background: var(--bg); color: var(--ink); font: 400 15px/1.7 var(--f-ui); overflow-x: hidden; -webkit-tap-highlight-color: transparent; }
+/* The page itself never scrolls or bounces; the app and the lock screen each scroll inside a
+   full-screen layer. Otherwise iPhone's pull-to-bounce drags the fixed tab bar off screen. */
+html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
+#app, #lock-root:not(:empty) { position: fixed; inset: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: none; -webkit-overflow-scrolling: touch; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 400 15px/1.7 var(--f-ui); -webkit-tap-highlight-color: transparent; }
 [hidden] { display: none !important; }
 h1, h2, h3, h4, p, ul, ol { margin: 0; }
 h1 { font: 700 26px/1.4 var(--f-display); }
@@ -408,7 +412,8 @@ rt { display: block; font: 400 10.5px/1.2 var(--f-py); color: var(--ink-2); }
 .chat-input textarea { flex: 1; min-height: 52px; }
 #toast { position: fixed; z-index: 60; bottom: calc(var(--tab-h) + 16px + env(safe-area-inset-bottom, 0px)); left: 50%; transform: translateX(-50%) translateY(10px); background: var(--ink); color: var(--on-ink); padding: 8px 18px; border-radius: 999px; opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; font-size: 14.5px; }
 #toast.on { opacity: 1; transform: translateX(-50%); }
-body.sheet-open { overflow: hidden; }
+body.sheet-open #app { overflow: hidden; }
+.sheet-body, #chat-msgs { overscroll-behavior: contain; }
 
 /* lock + setup (markup lives in src/platform/main.js) */
 .lk { min-height: 100vh; min-height: 100dvh; padding: 96px max(24px, env(safe-area-inset-right, 0px)) 32px max(24px, env(safe-area-inset-left, 0px)); background: var(--bg); color: var(--ink); font-family: var(--f-ui); font-size: 15px; }

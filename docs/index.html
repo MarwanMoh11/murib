@@ -53,7 +53,11 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
-body { margin: 0; background: var(--bg); color: var(--ink); font: 400 15px/1.7 var(--f-ui); overflow-x: hidden; -webkit-tap-highlight-color: transparent; }
+/* The page itself never scrolls or bounces; the app and the lock screen each scroll inside a
+   full-screen layer. Otherwise iPhone's pull-to-bounce drags the fixed tab bar off screen. */
+html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
+#app, #lock-root:not(:empty) { position: fixed; inset: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: none; -webkit-overflow-scrolling: touch; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 400 15px/1.7 var(--f-ui); -webkit-tap-highlight-color: transparent; }
 [hidden] { display: none !important; }
 h1, h2, h3, h4, p, ul, ol { margin: 0; }
 h1 { font: 700 26px/1.4 var(--f-display); }
@@ -421,7 +425,8 @@ rt { display: block; font: 400 10.5px/1.2 var(--f-py); color: var(--ink-2); }
 .chat-input textarea { flex: 1; min-height: 52px; }
 #toast { position: fixed; z-index: 60; bottom: calc(var(--tab-h) + 16px + env(safe-area-inset-bottom, 0px)); left: 50%; transform: translateX(-50%) translateY(10px); background: var(--ink); color: var(--on-ink); padding: 8px 18px; border-radius: 999px; opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; font-size: 14.5px; }
 #toast.on { opacity: 1; transform: translateX(-50%); }
-body.sheet-open { overflow: hidden; }
+body.sheet-open #app { overflow: hidden; }
+.sheet-body, #chat-msgs { overscroll-behavior: contain; }
 
 /* lock + setup (markup lives in src/platform/main.js) */
 .lk { min-height: 100vh; min-height: 100dvh; padding: 96px max(24px, env(safe-area-inset-right, 0px)) 32px max(24px, env(safe-area-inset-left, 0px)); background: var(--bg); color: var(--ink); font-family: var(--f-ui); font-size: 15px; }
@@ -4054,11 +4059,13 @@ function render() {
     const txt = /^(INPUT|TEXTAREA)$/.test(ae.tagName) && ae.type !== 'checkbox' && ae.type !== 'file';
     f = { id: ae.id, txt, s: txt ? ae.selectionStart : 0, e: txt ? ae.selectionEnd : 0 };
   }
-  const y = window.scrollY; const key = routeKey();
+  const app = $('#app'); // the scroller: the page itself never scrolls (see styles.css)
+  const y = app ? app.scrollTop : 0; const key = routeKey();
   view.innerHTML = viewHtml();
-  const app = $('#app'); if (app) app.dataset.route = S.route.name;
+  if (app) app.dataset.route = S.route.name;
   updateNav(); renderQbar();
-  window.scrollTo(0, key === lastKey ? y : 0); lastKey = key;
+  if (app) app.scrollTop = key === lastKey ? y : 0;
+  lastKey = key;
   if (f) {
     const el = document.getElementById(f.id);
     if (el) { try { el.focus({ preventScroll: true }); if (f.txt) el.setSelectionRange(f.s, f.e); } catch (e) { /* ignore */ } }
@@ -4300,7 +4307,7 @@ const ACT = {
   copyTr: (el) => { const t = dsT(el); const a = analysisOf(t, el.dataset.sid); if (a) copyText(a.translation_ar); },
   sentNav: (el) => {
     const t = dsT(el); if (!t) return; const ui = S.ui.si || (S.ui.si = {});
-    ui[t.id] = Math.min(Math.max((ui[t.id] || 0) + Number(el.dataset.d), 0), t.doc.sentences.length - 1); rr(); window.scrollTo(0, 0);
+    ui[t.id] = Math.min(Math.max((ui[t.id] || 0) + Number(el.dataset.d), 0), t.doc.sentences.length - 1); rr(); $('#app').scrollTop = 0;
   },
   moreRows: (el) => { const o = S.ui.rowsOpen || (S.ui.rowsOpen = {}); o[el.dataset.k] = true; rr(); },
   quickOn: () => { if (!S.ui.quick) S.ui.quick = { unknown: new Set() }; rr(); },

@@ -1075,11 +1075,13 @@ function render() {
     const txt = /^(INPUT|TEXTAREA)$/.test(ae.tagName) && ae.type !== 'checkbox' && ae.type !== 'file';
     f = { id: ae.id, txt, s: txt ? ae.selectionStart : 0, e: txt ? ae.selectionEnd : 0 };
   }
-  const y = window.scrollY; const key = routeKey();
+  const app = $('#app'); // the scroller: the page itself never scrolls (see styles.css)
+  const y = app ? app.scrollTop : 0; const key = routeKey();
   view.innerHTML = viewHtml();
-  const app = $('#app'); if (app) app.dataset.route = S.route.name;
+  if (app) app.dataset.route = S.route.name;
   updateNav(); renderQbar();
-  window.scrollTo(0, key === lastKey ? y : 0); lastKey = key;
+  if (app) app.scrollTop = key === lastKey ? y : 0;
+  lastKey = key;
   if (f) {
     const el = document.getElementById(f.id);
     if (el) { try { el.focus({ preventScroll: true }); if (f.txt) el.setSelectionRange(f.s, f.e); } catch (e) { /* ignore */ } }
@@ -1321,7 +1323,7 @@ const ACT = {
   copyTr: (el) => { const t = dsT(el); const a = analysisOf(t, el.dataset.sid); if (a) copyText(a.translation_ar); },
   sentNav: (el) => {
     const t = dsT(el); if (!t) return; const ui = S.ui.si || (S.ui.si = {});
-    ui[t.id] = Math.min(Math.max((ui[t.id] || 0) + Number(el.dataset.d), 0), t.doc.sentences.length - 1); rr(); window.scrollTo(0, 0);
+    ui[t.id] = Math.min(Math.max((ui[t.id] || 0) + Number(el.dataset.d), 0), t.doc.sentences.length - 1); rr(); $('#app').scrollTop = 0;
   },
   moreRows: (el) => { const o = S.ui.rowsOpen || (S.ui.rowsOpen = {}); o[el.dataset.k] = true; rr(); },
   quickOn: () => { if (!S.ui.quick) S.ui.quick = { unknown: new Set() }; rr(); },
