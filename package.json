@@ -1,0 +1,13 @@
+{
+  "name": "murib",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:platform": "esbuild src/platform/main.js --bundle --format=iife --target=es2020 --minify --legal-comments=none --outfile=dist/platform.js",
+    "build": "npm run build:platform && node build.mjs"
+  },
+  "devDependencies": {
+    "@anthropic-ai/sdk": "0.131.0",
+    "esbuild": "0.28.2"
+  }
+}

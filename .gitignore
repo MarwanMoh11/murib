@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.claude/
+.DS_Store
+SPEC.md
+test-fixtures/*.webp
+test-fixtures/sample-raw/

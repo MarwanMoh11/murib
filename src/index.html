@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#F3F4F0">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#121413">
+<title>مُعرِب</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600&family=Noto+Kufi+Arabic:wght@600;700&family=Noto+Naskh+Arabic:wght@400;600&family=Noto+Sans:wght@400;500&family=Noto+Serif+SC:wght@400;700&display=swap" rel="stylesheet">
+<!-- STYLES -->
+</head>
+<body>
+<div id="lock-root"></div>
+<div id="app" dir="rtl" data-route="library" hidden>
+  <header class="top" id="top">
+    <div class="top-in">
+      <button class="brand" id="brand" data-act="go" data-to="library" aria-label="المكتبة"><span class="seal" lang="zh-CN" aria-hidden="true">析</span><span class="brand-t">مُعرِب</span></button>
+      <span class="pill" id="mock-tag" hidden>وضع تجريبي</span>
+      <span class="save-ind" id="save-ind" aria-live="polite"></span>
+      <button class="ibtn" id="lock-btn" data-act="lock" aria-label="قفل" hidden><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></button>
+      <button class="ibtn" id="settings-btn" data-act="settings" aria-label="الإعدادات"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg></button>
+    </div>
+  </header>
+  <div class="banner" id="save-banner" hidden role="alert"></div>
+  <main class="col" id="main"><div id="view"></div></main>
+  <div id="qbar"></div>
+  <nav class="nav" id="nav" aria-label="التنقل الرئيسي">
+    <button id="nav-library" data-act="go" data-to="library"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4.5h11a2 2 0 0 1 2 2V20H7a2 2 0 0 1-2-2V4.5z"/><path d="M9 9h6M9 13h4"/></svg><span>المكتبة</span></button>
+    <button id="nav-new" class="nav-new" data-act="go" data-to="new"><span class="nav-plus" aria-hidden="true"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></span><span>نص جديد</span></button>
+    <button id="nav-review" data-act="go" data-to="review"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="8" width="13" height="12" rx="2"/><path d="M8 4.5h10a2 2 0 0 1 2 2V16"/></svg><span>المراجعة</span></button>
+  </nav>
+</div>
+<div id="sheet-root"></div>
+<div id="toast" role="status" aria-live="polite"></div>
+<!-- SCRIPTS -->
+</body>
+</html>
