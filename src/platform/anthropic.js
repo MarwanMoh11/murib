@@ -2,17 +2,32 @@
 // the student's own key. Implements the app's AI interface (see SPEC.md).
 import Anthropic from '@anthropic-ai/sdk';
 
-const MODELS = { best: 'claude-opus-5-5', fast: 'claude-sonnet-5-5' };
+// Haiku does the everyday work; Sonnet is the optional stronger tier and the «دقّق» examiner.
+// Any other tier (e.g. 'best' saved by older versions) falls back to Sonnet.
+const MODELS = { fast: 'claude-haiku-5-5', smart: 'claude-sonnet-5-5' };
 
-// Effort and output room per task. max_tokens includes thinking; every call streams.
+// Effort (thinking depth) and output room per task. max_tokens includes thinking; every
+// call streams. Thinking is most of the time and cost: reading and overviews need little,
+// analysis and grading get medium, and only the on-demand «دقّق» review thinks hard.
 const TASKS = {
-  ocr: { effort: 'medium', max_tokens: 12000 },
-  overview: { effort: 'medium', max_tokens: 16000 },
-  analyze: { effort: 'high', max_tokens: 48000 },
-  review: { effort: 'high', max_tokens: 48000 },
-  grade: { effort: 'high', max_tokens: 16000 },
+  ocr: { effort: 'low', max_tokens: 12000 },
+  overview: { effort: 'low', max_tokens: 12000 },
+  analyze: { effort: 'medium', max_tokens: 20000 },
+  review: { effort: 'high', max_tokens: 32000 },
+  grade: { effort: 'medium', max_tokens: 16000 },
   chat: { effort: 'low', max_tokens: 8000 },
 };
+
+// A stream that drops mid-reply (flaky mobile data, a busy server) is retried here,
+// since the SDK only retries before a reply starts.
+const RETRY_CODES = ['upstream_error', 'overloaded'];
+const RETRY_WAIT_MS = [2000, 6000];
+
+const wait = (ms, signal) =>
+  new Promise((resolve, reject) => {
+    const t = setTimeout(resolve, ms);
+    if (signal) signal.addEventListener('abort', () => { clearTimeout(t); reject({ code: 'cancelled', message: 'cancelled' }); }, { once: true });
+  });
 
 const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 
@@ -77,80 +92,67 @@ function normalizeTurns(turns) {
 }
 
 export function createAnthropicAI({ apiKey }) {
-  const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true, maxRetries: 2 });
-  let useFallbacks = true; // server-side refusal fallback (beta); dropped for the session if the API rejects it
-
+  const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true, maxRetries: 4 });
   async function run({ task, tier, messages, signal, onText }) {
     const t = TASKS[task] || TASKS.chat;
     const body = {
-      model: MODELS[tier] || MODELS.best,
+      model: MODELS[tier] || MODELS.smart,
       max_tokens: t.max_tokens,
       output_config: { effort: t.effort },
       messages,
     };
-    if (useFallbacks) {
-      body.betas = ['server-side-fallback-2026-07-01'];
-      body.fallbacks = 'default';
-    }
-    let full = '';
-    try {
-      const stream = client.beta.messages.stream(body, { signal });
-      stream.on('text', (delta) => {
-        full += delta;
-        if (onText) onText({ text: full, delta });
-      });
-      const msg = await stream.finalMessage();
-      if (msg.stop_reason === 'refusal') {
-        throw { code: 'refused', message: (msg.stop_details && msg.stop_details.explanation) || 'refused' };
+    for (let attempt = 0; ; attempt++) {
+      let full = '';
+      try {
+        const stream = client.messages.stream(body, { signal });
+        stream.on('text', (delta) => {
+          full += delta;
+          if (onText) onText({ text: full, delta });
+        });
+        const msg = await stream.finalMessage();
+        if (msg.stop_reason === 'refusal') {
+          throw { code: 'refused', message: (msg.stop_details && msg.stop_details.explanation) || 'refused' };
+        }
+        const text = (msg.content || [])
+          .filter((b) => b.type === 'text')
+          .map((b) => b.text)
+          .join('');
+        if (!text.trim()) throw { code: 'empty_completion', message: 'empty reply' };
+        return { text, truncated: msg.stop_reason === 'max_tokens' };
+      } catch (e) {
+        const err = mapError(e, full || undefined);
+        if (attempt < RETRY_WAIT_MS.length && RETRY_CODES.includes(err.code) && !(signal && signal.aborted)) {
+          if (onText) onText({ text: '', delta: '' }); // the retry starts the reply over
+          await wait(RETRY_WAIT_MS[attempt], signal);
+          continue;
+        }
+        throw err;
       }
-      // After a server-side fallback, only the blocks the answering model wrote count.
-      const blocks = msg.content || [];
-      let start = 0;
-      blocks.forEach((b, i) => {
-        if (b.type === 'fallback') start = i + 1;
-      });
-      const text = blocks
-        .slice(start)
-        .filter((b) => b.type === 'text')
-        .map((b) => b.text)
-        .join('');
-      if (!text.trim()) throw { code: 'empty_completion', message: 'empty reply' };
-      return { text, truncated: msg.stop_reason === 'max_tokens' };
-    } catch (e) {
-      if (
-        useFallbacks &&
-        e instanceof Anthropic.BadRequestError &&
-        /fallback|anthropic-beta|beta/i.test(String(e.message)) &&
-        !full
-      ) {
-        useFallbacks = false;
-        return run({ task, tier, messages, signal, onText });
-      }
-      throw mapError(e, full || undefined);
     }
   }
 
   return {
     limits: async () => ({ images: { maxCount: 8, mediaTypes: IMAGE_TYPES } }),
 
-    async json(prompt, { task = 'analyze', tier = 'best', images, signal } = {}) {
-      let content = prompt;
-      const list = images ? Array.from(images) : [];
-      if (list.length) {
-        const blocks = [];
-        for (const img of list) {
-          const media = IMAGE_TYPES.includes(img.type) ? img.type : 'image/jpeg';
-          blocks.push({ type: 'image', source: { type: 'base64', media_type: media, data: await blobToBase64(img) } });
-        }
-        blocks.push({ type: 'text', text: prompt });
-        content = blocks;
+    /** prompt: a string, or [prefix, suffix] where the prefix is shared by many calls and cached. */
+    async json(prompt, { task = 'analyze', tier = 'smart', images, signal } = {}) {
+      const parts = Array.isArray(prompt) ? prompt : [prompt];
+      const content = [];
+      for (const img of images ? Array.from(images) : []) {
+        const media = IMAGE_TYPES.includes(img.type) ? img.type : 'image/jpeg';
+        content.push({ type: 'image', source: { type: 'base64', media_type: media, data: await blobToBase64(img) } });
       }
+      parts.forEach((text, i) => {
+        const block = { type: 'text', text };
+        if (parts.length > 1 && i === 0) block.cache_control = { type: 'ephemeral' };
+        content.push(block);
+      });
       const { text, truncated } = await run({ task, tier, messages: [{ role: 'user', content }], signal });
       if (truncated) throw { code: 'invalid_json', message: 'The reply was cut short.', text };
       return parseLooseJson(text);
     },
 
-    async stream(turns, { task = 'chat', tier = 'best', signal, onText } = {}) {
+    async stream(turns, { task = 'chat', tier = 'smart', signal, onText } = {}) {
       const messages = normalizeTurns(turns);
       if (!messages.length || messages[messages.length - 1].role !== 'user') {
         throw { code: 'invalid_request', message: 'turns must end with a user turn' };

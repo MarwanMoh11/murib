@@ -82,9 +82,11 @@
    *   chunks:    [{ id: 'c1', para, sentenceIds: ['S1', …] }]
    * }
    * para 0 is the title; paragraphs are numbered from 1. Chunks never cross a paragraph.
+   * One sentence per chunk by default: each call is short, so sentences appear one by one,
+   * a dropped connection costs one sentence, and the shared prompt prefix is cached.
    * Store the result with the text: ids must not change after analysis.
    */
-  function buildDocument({ title = '', paragraphs = [] } = {}, { maxChars = 100, maxSentences = 4 } = {}) {
+  function buildDocument({ title = '', paragraphs = [] } = {}, { maxChars = 100, maxSentences = 1 } = {}) {
     const blocks = [];
     if (stripPunct(parseBold(title).clean)) blocks.push({ para: 0, marked: title });
     paragraphs
@@ -511,8 +513,12 @@ TRANSLATION
    * doc: { title, paragraphs } clean; sentences: the chunk's sentence objects; glossary: overview.glossary.
    * Reply: { sentences: [...] } → normalizeChunk(reply, sentences).
    */
-  function analyzePrompt({ doc, course, glossary, sentences }) {
-    return `${persona(course)}
+  /**
+   * [prefix, suffix]: the prefix is identical for every chunk of a text (cached by the API),
+   * the suffix names the sentences to analyze.
+   */
+  function analyzePromptParts({ doc, course, glossary, sentences }) {
+    const prefix = `${persona(course)}
 
 THE WHOLE TEXT (context only):
 ${passage(doc)}
@@ -520,19 +526,25 @@ ${passage(doc)}
 GLOSSARY — use exactly these Arabic renderings:
 ${glossaryBlock(glossary)}
 
-ANALYZE THESE SENTENCES (id: text):
-${sentenceList(sentences)}
-
 ${RULES}
 
 OUTPUT — reply with only this JSON, no markdown fences, no commentary:
 {"sentences":[{"id":"S…","words":[…],"parts":[…],"structure_ar":"…","translation_ar":"…","patterns":[…],"notes_ar":[…]}]}
-One object per sentence above, same ids, same order.
+One object per sentence listed at the end, same ids, same order.
 
 EXAMPLE for the sentence «S1: 我很喜欢中国菜。»:
 ${EXAMPLE}
 
-${FINAL_CHECK}`;
+${FINAL_CHECK}
+
+`;
+    const suffix = `ANALYZE THESE SENTENCES (id: text):
+${sentenceList(sentences)}`;
+    return [prefix, suffix];
+  }
+
+  function analyzePrompt(args) {
+    return analyzePromptParts(args).join('');
   }
 
   /**
@@ -690,6 +702,7 @@ ${passage(doc)}${f}`;
     ocrPrompt,
     overviewPrompt,
     analyzePrompt,
+    analyzePromptParts,
     reviewPrompt,
     gradePrompt,
     tutorIntro,

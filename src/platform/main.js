@@ -64,13 +64,36 @@ async function start(secrets, { remembered }) {
   const store = createGithubStore({ token: secrets.githubToken, repo: secrets.dataRepo || DEFAULT_REPO });
   await store.init();
   hide();
+  let locking = false;
   const lockNow = async () => {
+    if (locking) return;
+    locking = true;
+    const A = window.MuribApp || {};
+    if (A.busy && A.busy()) await finishRunningWork(A);
+    // Pending saves get a few seconds; a dead network must not keep the app unlocked.
+    await Promise.race([A.settle ? A.settle().catch(() => {}) : null, new Promise((r) => setTimeout(r, 8000))]);
     await forgetDevice();
     location.hash = '';
     location.reload();
   };
   if (!remembered) armAutoLock(lockNow);
   window.MuribApp.boot({ ai, store, onLock: lockNow, mode: 'live' });
+}
+
+// Locking while AI calls run: hide the app at once, but let the calls finish and save,
+// since they are already being paid for. "Lock now" abandons them (the reload ends them).
+function finishRunningWork(A) {
+  const app = document.getElementById('app');
+  if (app) app.hidden = true;
+  return new Promise((resolve) => {
+    const node = el(`<main class="lk"><div class="lk-card">${BRAND}
+      <p class="lk-sub"><b>تم القفل.</b> يُكمل التحليل الجاري ويحفظه حتى لا يضيع رصيدك، ثم تظهر شاشة كلمة المرور تلقائيًا.</p>
+      <button class="lk-btn secondary" type="button">اقفل فورًا وأوقف التحليل</button></div></main>`);
+    node.querySelector('button').addEventListener('click', resolve);
+    show(node);
+    const poll = () => (A.busy() ? setTimeout(poll, 3000) : resolve());
+    poll();
+  });
 }
 
 function armAutoLock(lockNow) {

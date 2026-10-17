@@ -71,15 +71,16 @@ const MOCK = {
 
 
 // ───────────── profile / srs defaults ─────────────
-const defaultProfile = () => ({ known: [], settings: { tier: 'best', showPinyin: true } });
+// tier: 'smart' = Sonnet 5.5 (default, for anything studied from), 'fast' = Haiku 5.5 (cheaper, less exact).
+const defaultProfile = () => ({ known: [], settings: { tier: 'smart', showPinyin: true } });
 const defaultSrs = () => ({ cards: {} });
 function normProfile(p) {
   const d = defaultProfile();
   p = p && typeof p === 'object' ? p : {};
   const s = Object.assign({}, d.settings, p.settings || {});
-  if (s.tier === 'complex') s.tier = 'best';
-  if (s.tier === 'default') s.tier = 'fast';
-  if (s.tier !== 'best' && s.tier !== 'fast') s.tier = 'best';
+  // Older versions saved 'best' (Opus) and 'fast' (Sonnet): both become today's default.
+  if (s.tier !== 'smart' && s.tier !== 'fast') s.tier = 'smart';
+  if (!p.settings || !p.settings.modelV2) { s.tier = 'smart'; s.modelV2 = true; }
   return { known: Array.isArray(p.known) ? p.known.filter((x) => typeof x === 'string') : [], settings: s };
 }
 
@@ -126,6 +127,8 @@ const Saver = (() => {
       if (typeof updateSaveInd === 'function') updateSaveInd();
     },
     flush() { writers.forEach((w) => { if (w.has && !w.busy) { clearTimeout(w.timer); w.go(); } }); },
+    /** Flush, then resolve once every pending write has finished (used before locking). */
+    async settle() { api.flush(); await Promise.all(Array.from(writers.values()).map((w) => w.p)); },
     async drop(prefix) {
       const ps = [];
       writers.forEach((w, k) => { if (k.startsWith(prefix)) { clearTimeout(w.timer); w.timer = 0; w.has = false; ps.push(w.p); } });
@@ -194,6 +197,8 @@ const AI = (() => {
   return {
     attach(b) { ext = b; lim = null; },
     available() { return !!ext; },
+    /** True while any call is running or queued. */
+    busy() { return Q.active > 0 || Q.waiting.length > 0; },
     async loadLimits() {
       try { lim = await ext.limits(); } catch (e) { lim = {}; }
       return lim;
@@ -201,7 +206,7 @@ const AI = (() => {
     limits() { return lim || {}; },
     json(prompt, o = {}) {
       if (!ext) return Promise.reject({ code: 'sampling_disabled', message: 'unavailable' });
-      const r = { task: o.task, tier: o.tier || 'best' };
+      const r = { task: o.task, tier: o.tier || 'smart' };
       if (o.signal) r.signal = o.signal;
       if (o.fresh) r.fresh = true;
       if (o.images && o.images.length) r.images = o.images;
@@ -210,7 +215,7 @@ const AI = (() => {
     },
     stream(turns, o = {}) {
       if (!ext) return Promise.reject({ code: 'sampling_disabled', message: 'unavailable' });
-      const r = { task: 'chat', tier: o.tier || 'fast' };
+      const r = { task: 'chat', tier: o.tier || 'smart' };
       if (o.signal) r.signal = o.signal;
       if (o.onText) r.onText = o.onText;
       return qrun(() => ext.stream(turns, r), o.signal, true);
@@ -279,6 +284,7 @@ function makeMockAI() {
       return { text, truncated: false };
     },
     async json(prompt, o = {}) {
+      if (Array.isArray(prompt)) prompt = prompt.join(''); // [cached prefix, suffix]
       await sleep(600, o.signal);
       const tag = o.tag || '';
       if (o.task === 'ocr') {
@@ -518,10 +524,18 @@ async function runChunk(t, id, { force = false, signal } = {}) {
   try {
     if (signal.aborted) throw cancelled();
     const sentences = chunkSentences(t, chunk);
-    const prompt = C.analyzePrompt({ doc: t.doc, course: t.course, glossary: t.overview && t.overview.glossary, sentences });
+    const prompt = C.analyzePromptParts({ doc: t.doc, course: t.course, glossary: t.overview && t.overview.glossary, sentences });
     S.live.add(key + ':call');
-    const raw = await AI.json(prompt, { task: 'analyze', tier: tierOf(), signal, fresh: !!force, tag: 'analyze:' + id });
-    const res = C.normalizeChunk(raw, sentences);
+    const opts = { task: 'analyze', tier: tierOf(), signal, fresh: !!force, tag: 'analyze:' + id };
+    let res = C.normalizeChunk(await AI.json(prompt, opts), sentences);
+    // A reply that fails the checks (words that don't rebuild the sentence, a missing
+    // translation…) is redone once; the better of the two is kept.
+    if (res.warnings.length && !signal.aborted) {
+      try {
+        const again = C.normalizeChunk(await AI.json(prompt, Object.assign({}, opts, { fresh: true })), sentences);
+        if (again.warnings.length < res.warnings.length) res = again;
+      } catch (e) { /* keep the first reply */ }
+    }
     if (!Object.keys(res.analyses).length) throw { code: 'invalid_json', message: 'empty' };
     Object.assign(t.analyses, res.analyses);
     cs.status = 'done'; cs.error = ''; cs.warnings = res.warnings;
@@ -561,7 +575,7 @@ async function reviewChunk(t, id) {
   S.reviewing.add(key); delete S.reviewErr[key]; rr();
   try {
     const prompt = C.reviewPrompt({ doc: t.doc, course: t.course, glossary: t.overview && t.overview.glossary, sentences, current: pickAnalyses(t, sentences) });
-    const raw = await AI.json(prompt, { task: 'review', tier: tierOf(), fresh: true, priority: true, tag: 'review:' + id });
+    const raw = await AI.json(prompt, { task: 'review', tier: 'smart', fresh: true, priority: true, tag: 'review:' + id });
     const res = C.normalizeReview(raw, sentences);
     if (!Object.keys(res.analyses).length) throw { code: 'invalid_json', message: 'empty' };
     Object.assign(t.analyses, res.analyses);
@@ -626,7 +640,27 @@ async function runOcr() {
   nt.ocr = null; nt.step = 'review';
   nt.edTitle = merged.title; nt.edBody = merged.paragraphs.join('\n');
   nt.uncertain = merged.uncertain; nt.notes = merged.notes_ar.join(' ');
-  rr();
+  saveDraft(); rr();
+}
+
+// The proofread draft survives a reload of this tab (iPhone reloads tabs it dropped in the
+// background, and locking reloads), so the photos are never read, and paid for, twice.
+const DRAFT_KEY = 'murib-draft';
+function saveDraft() {
+  try {
+    const nt = S.nt;
+    if (nt && nt.step === 'review') sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ course: nt.course, edTitle: nt.edTitle, edBody: nt.edBody, uncertain: nt.uncertain, notes: nt.notes }));
+    else sessionStorage.removeItem(DRAFT_KEY);
+  } catch (e) { /* storage blocked: the draft lives in memory only */ }
+}
+function restoreDraft() {
+  try {
+    const d = JSON.parse(sessionStorage.getItem(DRAFT_KEY) || 'null');
+    if (!d || typeof d.edBody !== 'string') return false;
+    S.nt = { step: 'review', mode: 'photo', course: d.course || 'translation', photos: [], pages: {}, pasteTitle: '', pasteBody: '',
+      edTitle: d.edTitle || '', edBody: d.edBody, uncertain: Array.isArray(d.uncertain) ? d.uncertain : [], notes: d.notes || '' };
+    return true;
+  } catch (e) { return false; }
 }
 
 // ───────────── clipboard ─────────────
@@ -1178,7 +1212,8 @@ function settingsSheetHtml() {
     ? `<div class="confirm" role="alert"><span>مسح كل الكلمات المعروفة؟</span><button class="btn danger sm" id="reset-yes" data-act="resetYes">نعم، امسح</button><button class="btn ghost sm" id="reset-no" data-act="confirmNo">إلغاء</button></div>`
     : `<button class="btn" id="reset-known" data-act="resetAsk">إعادة ضبط الكلمات المعروفة</button>`;
   return `<h3>الإعدادات</h3><div class="lbl">النموذج</div>
-    <div class="seg col2" role="group" aria-label="النموذج">${tierBtn('best', 'Opus 5.5 — الأدق (افتراضي)')}${tierBtn('fast', 'Sonnet 5.5 — أسرع وأرخص')}</div>
+    <div class="seg col2" role="group" aria-label="النموذج">${tierBtn('smart', 'Sonnet 5.5 — دقيق (افتراضي)')}${tierBtn('fast', 'Haiku 5.5 — أسرع وأرخص، أقل دقة')}</div>
+    <p class="muted">التدقيق «دقّق» يستخدم Sonnet 5.5 دائمًا بتفكير أعمق.</p>
     <div class="lbl">المظهر</div>
     <div class="seg col2" role="group" aria-label="المظهر">${themeBtn('dark', 'داكن')}${themeBtn('light', 'فاتح')}</div>
     <label class="chk big" for="set-py"><input type="checkbox" id="set-py" data-change="setPinyin" ${st.showPinyin ? 'checked' : ''}><span>إظهار النطق (pinyin) افتراضيًا</span></label>
@@ -1232,7 +1267,7 @@ function sendChat(text) {
   hist.forEach((m) => { const l = merged[merged.length - 1]; if (l && l.role === m.role) l.content += '\n\n' + m.content; else merged.push(Object.assign({}, m)); });
   merged[0].content = intro + '\n\n— سؤال الطالب:\n' + merged[0].content;
   updateChatDom();
-  AI.stream(merged, { tier: 'fast', signal: chat.ctrl.signal, onText: ({ text: tx }) => { bot.content = tx; bot.pending = false; updateChatDom(); } })
+  AI.stream(merged, { tier: tierOf(), signal: chat.ctrl.signal, onText: ({ text: tx }) => { bot.content = tx; bot.pending = false; updateChatDom(); } })
     .then((r) => { if (r && r.text) bot.content = r.text; if (r && r.truncated) bot.note = 'انقطع الرد — اسأل عن جزء أصغر'; })
     .catch((e) => { if (!isCancel(e)) bot.error = errMsg(e); })
     .finally(() => {
@@ -1259,29 +1294,29 @@ const ACT = {
   },
   settings: () => { S.sheet = { type: 'settings' }; renderSheet(); },
   lock: () => {
-    Object.values(S.ctrls).forEach((c) => c.abort());
+    // Running AI calls are not aborted: the shell hides the app at once, lets them finish
+    // and save (they are already paid for), then locks. It offers an immediate lock too.
     Saver.flush(); S.sheet = null; renderSheet();
-    const app = $('#app'); if (app) app.hidden = true;
     if (S.onLock) S.onLock();
   },
   closeSheet: () => closeSheet(),
   saveRetry: () => { Saver.retry(); updateSaveInd(); },
   bootRetry: () => loadData(),
   // new text
-  ntCourse: (el) => { S.nt.course = el.dataset.v; rr(); },
+  ntCourse: (el) => { S.nt.course = el.dataset.v; saveDraft(); rr(); },
   ntMode: (el) => { S.nt.mode = el.dataset.v; rr(); },
   rot: (el) => { const p = S.nt.photos.find((x) => x.id === el.dataset.id); if (p) { p.rot = (p.rot + Number(el.dataset.d) + 360) % 360; rr(); } },
   rmPhoto: (el) => { const i = S.nt.photos.findIndex((x) => x.id === el.dataset.id); if (i >= 0) { URL.revokeObjectURL(S.nt.photos[i].url); S.nt.photos.splice(i, 1); } rr(); },
   ntRead: () => { if (S.nt.photos.length && !(S.nt.ocr && S.nt.ocr.running)) runOcr(); },
   ntCancel: () => { if (S.nt.ctrl) S.nt.ctrl.abort(); S.nt.ocr = null; rr(); },
-  ntPaste: () => { const nt = S.nt; nt.edTitle = nt.pasteTitle; nt.edBody = nt.pasteBody; nt.uncertain = []; nt.notes = ''; nt.step = 'review'; rr(); },
-  ntBack: () => { S.nt.step = 'input'; rr(); },
+  ntPaste: () => { const nt = S.nt; nt.edTitle = nt.pasteTitle; nt.edBody = nt.pasteBody; nt.uncertain = []; nt.notes = ''; nt.step = 'review'; saveDraft(); rr(); },
+  ntBack: () => { S.nt.step = 'input'; saveDraft(); rr(); },
   ntAnalyze: () => {
     const nt = S.nt; const paras = C.parseEditor(nt.edBody); const title = (nt.edTitle || '').trim();
     if (!C.buildDocument({ title, paragraphs: paras }).sentences.length) { toast('النص فارغ'); return; }
     const t = newTextRecord(nt.course, title, paras);
     nt.photos.forEach((p) => URL.revokeObjectURL(p.url));
-    S.loaded.add(t.id); S.texts.push(t); persistMeta(t); S.nt = null;
+    S.loaded.add(t.id); S.texts.push(t); persistMeta(t); S.nt = null; saveDraft();
     S.ui.tab[t.id] = 'sent'; go('text', { id: t.id }); startAnalysis(t);
   },
   // text view
@@ -1411,7 +1446,7 @@ function bindEvents() {
   document.addEventListener('input', (ev) => {
     const el = ev.target; const m = el.dataset && el.dataset.model; if (!m) return;
     if (m.startsWith('nt.')) {
-      S.nt[m.slice(3)] = el.value;
+      S.nt[m.slice(3)] = el.value; saveDraft();
       if (m === 'nt.edBody') { const pv = $('#nt-preview'); if (pv) pv.innerHTML = boldPreview(el.value, S.nt.uncertain); }
       if (m === 'nt.pasteBody') { const b = $('#nt-paste-go'); if (b) b.disabled = !el.value.trim(); }
     } else {
@@ -1453,6 +1488,7 @@ async function boot(opts) {
   S.mode = opts.mode || ''; S.mock = S.mode === 'mock'; S.onLock = typeof opts.onLock === 'function' ? opts.onLock : null;
   S.route = { name: 'library' }; S.sheet = null; S.nt = null; S.rv = null; S.quiz = null; S.chats = {}; S.grade = {}; S.ctrls = {}; S.live = new Set();
   S.confirm = null; S.ui.quick = null; S.ui.prac = null;
+  if (restoreDraft()) S.route = { name: 'new' };
   document.documentElement.lang = 'ar'; document.documentElement.dir = 'rtl';
   const app = $('#app'); if (app) app.hidden = false;
   const lb = $('#lock-btn'); if (lb) lb.hidden = !S.onLock;
@@ -1463,6 +1499,7 @@ async function boot(opts) {
   await loadData();
 }
 
-window.MuribApp = { boot };
+// busy/settle let the shell finish paid AI work and pending saves before it locks.
+window.MuribApp = { boot, busy: () => AI.busy(), settle: () => Saver.settle() };
 if (/mock/.test(location.hash)) boot({ ai: makeMockAI(), store: makeMockStore(), mode: 'mock', onLock: null });
 })();
