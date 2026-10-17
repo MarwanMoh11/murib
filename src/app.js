@@ -1169,12 +1169,16 @@ function updateChatDom() {
 function settingsSheetHtml() {
   const st = S.profile.settings;
   const tierBtn = (k, l) => `<button id="tier-${k}" class="${st.tier === k ? 'on' : ''}" data-act="setTier" data-v="${k}">${l}</button>`;
+  const theme = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+  const themeBtn = (k, l) => `<button class="${theme === k ? 'on' : ''}" data-act="setTheme" data-v="${k}">${l}</button>`;
   const storage = S.mock ? 'وضع تجريبي — محفوظ في هذا المتصفح' : 'محفوظ في مستودع GitHub الخاص بك';
   const reset = S.confirm === 'resetKnown'
     ? `<div class="confirm" role="alert"><span>مسح كل الكلمات المعروفة؟</span><button class="btn danger sm" id="reset-yes" data-act="resetYes">نعم، امسح</button><button class="btn ghost sm" id="reset-no" data-act="confirmNo">إلغاء</button></div>`
     : `<button class="btn" id="reset-known" data-act="resetAsk">إعادة ضبط الكلمات المعروفة</button>`;
   return `<h3>الإعدادات</h3><div class="lbl">النموذج</div>
     <div class="seg col2" role="group" aria-label="النموذج">${tierBtn('best', 'Opus 5.5 — الأدق (افتراضي)')}${tierBtn('fast', 'Sonnet 5.5 — أسرع وأرخص')}</div>
+    <div class="lbl">المظهر</div>
+    <div class="seg col2" role="group" aria-label="المظهر">${themeBtn('dark', 'داكن')}${themeBtn('light', 'فاتح')}</div>
     <label class="chk big" for="set-py"><input type="checkbox" id="set-py" data-change="setPinyin" ${st.showPinyin ? 'checked' : ''}><span>إظهار النطق (pinyin) افتراضيًا</span></label>
     <p class="muted">${storage}</p>
     <p class="muted">${S.known.size} كلمة معروفة</p>${reset}
@@ -1358,6 +1362,14 @@ const ACT = {
   chatStop: () => { const c = chatOf(S.sheet.tid); if (c.ctrl) c.ctrl.abort(); },
   chatChip: (el) => sendChat(el.dataset.q),
   setTier: (el) => { S.profile.settings.tier = el.dataset.v; saveProfile(); renderSheet(); },
+  // Per device (also styles the lock screen, before the profile loads), so localStorage rather than the profile.
+  setTheme: (el) => {
+    const v = el.dataset.v === 'light' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = v;
+    try { localStorage.setItem('murib-theme', v); } catch { /* private mode: this visit only */ }
+    const m = $('meta[name="theme-color"]'); if (m) m.content = v === 'light' ? '#F3F4F0' : '#121413';
+    renderSheet();
+  },
   resetAsk: () => { S.confirm = 'resetKnown'; renderSheet(); },
   resetYes: () => { S.confirm = null; S.known = new Set(); S.profile.known = []; saveProfile(); renderSheet(); rr(); toast('تمت إعادة الضبط'); },
 };
