@@ -16,6 +16,7 @@ const inject = (html, marker, text) => {
 
 const scripts = [
   ['src/core.js', true],
+  ['src/analytics.js', true],
   ['src/sample-data.js', false],
   ['dist/platform.js', false],
   ['src/app.js', true],

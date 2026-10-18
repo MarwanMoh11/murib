@@ -52,6 +52,8 @@ async function loadConfig() {
   }
 }
 
+const visitorName = () => (window.MuribAnalytics ? window.MuribAnalytics.visitorName() : '');
+
 function storageMessage(e) {
   if (e && e.code === 'storage_auth') return 'رمز GitHub لا يملك صلاحية على مستودع البيانات أو انتهت صلاحيته. أنشئ رمزًا جديدًا ثم أعد الإعداد.';
   return 'تعذّر الوصول إلى مستودع البيانات على GitHub. تحقّق من الاتصال ثم أعد المحاولة.';
@@ -77,7 +79,7 @@ async function start(secrets, { remembered }) {
     location.reload();
   };
   if (!remembered) armAutoLock(lockNow);
-  window.MuribApp.boot({ ai, store, onLock: lockNow, mode: 'live' });
+  window.MuribApp.boot({ ai, store, onLock: lockNow, mode: 'live', unlock: remembered ? 'remembered' : 'password' });
 }
 
 // Locking while AI calls run: hide the app at once, but let the calls finish and save,
@@ -114,6 +116,8 @@ function lockScreen(config) {
     <p class="lk-sub">أدخل كلمة المرور لفتح مكتبتك.</p>
     <div class="lk-field"><label for="lk-pass">كلمة المرور</label>
       <input id="lk-pass" type="password" autocomplete="current-password" required></div>
+    ${visitorName() ? '' : `<div class="lk-field"><label for="lk-name">اسمك <small>(اختياري)</small></label>
+      <input id="lk-name" type="text" autocomplete="name" maxlength="40"></div>`}
     <label class="lk-check"><input id="lk-remember" type="checkbox">
       <span>تذكّر هذا الجهاز — لهاتفك أو حاسوبك الشخصي فقط، لا تستخدمه على أجهزة الكلية أو المقاهي.</span></label>
     <p class="lk-err" role="alert" hidden></p>
@@ -133,6 +137,8 @@ function lockScreen(config) {
     err.hidden = true;
     try {
       const { secrets, key } = await unlock(config, pass);
+      const name = node.querySelector('#lk-name');
+      if (name && name.value.trim() && window.MuribAnalytics) window.MuribAnalytics.setVisitorName(name.value);
       const remember = node.querySelector('#lk-remember').checked;
       if (remember) await rememberDevice(config, key);
       await start(secrets, { remembered: remember });

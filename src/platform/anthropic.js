@@ -93,7 +93,7 @@ function normalizeTurns(turns) {
 
 export function createAnthropicAI({ apiKey }) {
   const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true, maxRetries: 4 });
-  async function run({ task, tier, messages, signal, onText }) {
+  async function run({ task, tier, messages, signal, onText, onUsage }) {
     const t = TASKS[task] || TASKS.chat;
     const body = {
       model: MODELS[tier] || MODELS.smart,
@@ -110,6 +110,7 @@ export function createAnthropicAI({ apiKey }) {
           if (onText) onText({ text: full, delta });
         });
         const msg = await stream.finalMessage();
+        if (onUsage && msg.usage) onUsage(msg.usage);
         if (msg.stop_reason === 'refusal') {
           throw { code: 'refused', message: (msg.stop_details && msg.stop_details.explanation) || 'refused' };
         }
@@ -135,7 +136,7 @@ export function createAnthropicAI({ apiKey }) {
     limits: async () => ({ images: { maxCount: 8, mediaTypes: IMAGE_TYPES } }),
 
     /** prompt: a string, or [prefix, suffix] where the prefix is shared by many calls and cached. */
-    async json(prompt, { task = 'analyze', tier = 'smart', images, signal } = {}) {
+    async json(prompt, { task = 'analyze', tier = 'smart', images, signal, onUsage } = {}) {
       const parts = Array.isArray(prompt) ? prompt : [prompt];
       const content = [];
       for (const img of images ? Array.from(images) : []) {
@@ -147,17 +148,17 @@ export function createAnthropicAI({ apiKey }) {
         if (parts.length > 1 && i === 0) block.cache_control = { type: 'ephemeral' };
         content.push(block);
       });
-      const { text, truncated } = await run({ task, tier, messages: [{ role: 'user', content }], signal });
+      const { text, truncated } = await run({ task, tier, messages: [{ role: 'user', content }], signal, onUsage });
       if (truncated) throw { code: 'invalid_json', message: 'The reply was cut short.', text };
       return parseLooseJson(text);
     },
 
-    async stream(turns, { task = 'chat', tier = 'smart', signal, onText } = {}) {
+    async stream(turns, { task = 'chat', tier = 'smart', signal, onText, onUsage } = {}) {
       const messages = normalizeTurns(turns);
       if (!messages.length || messages[messages.length - 1].role !== 'user') {
         throw { code: 'invalid_request', message: 'turns must end with a user turn' };
       }
-      return run({ task, tier, messages, signal, onText });
+      return run({ task, tier, messages, signal, onText, onUsage });
     },
 
     /** Cheap credential check for the setup screen (no tokens spent). */

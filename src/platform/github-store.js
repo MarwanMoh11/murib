@@ -5,6 +5,7 @@
 //   texts/<id>.json     the full text record (analyses included)
 //   profile.json        { known, settings }
 //   srs.json            { cards }
+//   analytics/<YYYY-MM>_<device>.json   { device, sessions } — the visit log (see src/analytics.js)
 //
 // Writes are debounced and serialized per file; each write is one commit. Another device or
 // the murib-fix review skill may have changed a file since this session read it: before
@@ -56,6 +57,18 @@ export function mergeIndex(base, local, remote) {
   return { texts: texts.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)) };
 }
 
+/** A visit log: session by session (the copy seen last wins), the newest device details. */
+export function mergeVisits(base, local, remote) {
+  local = local || {};
+  remote = remote || {};
+  const byId = new Map();
+  for (const s of [...(remote.sessions || []), ...(local.sessions || [])]) {
+    const cur = byId.get(s.id);
+    if (!cur || (s.last || 0) >= (cur.last || 0)) byId.set(s.id, s);
+  }
+  return { v: 1, device: local.device || remote.device, sessions: [...byId.values()].sort((a, b) => a.start - b.start) };
+}
+
 export function createGithubStore({ token, repo }) {
   const shas = new Map(); // path → last known blob sha
   const synced = new Map(); // path → JSON last read from or written to GitHub (the merge base)
@@ -63,6 +76,8 @@ export function createGithubStore({ token, repo }) {
   const texts = new Map(); // id → full record (session cache)
   let index = null; // [meta]
   let profileCache = null;
+  const visits = new Map(); // analytics path → this device's visit log as last read or written
+  const visitNext = new Map(); // analytics path → { device, session } to write next
 
   async function request(method, path, body, accept = 'application/vnd.github+json') {
     const url = `${API}/repos/${repo}/contents/${path.split('/').map(encodeURIComponent).join('/')}`;
@@ -120,6 +135,7 @@ export function createGithubStore({ token, repo }) {
 
   function mergerFor(path) {
     if (path === 'index.json') return { merge: mergeIndex, apply: (v) => { index = v.texts; } };
+    if (path.startsWith('analytics/')) return { merge: mergeVisits, apply: (v) => visits.set(path, v) };
     const m = /^texts\/(.+)\.json$/.exec(path);
     return m && { merge: mergeText, apply: (v) => texts.set(m[1], v) };
   }
@@ -319,6 +335,39 @@ export function createGithubStore({ token, repo }) {
     async saveSrs(s) {
       const snapshot = clone(s);
       await schedule('srs.json', () => snapshot, 1500);
+    },
+
+    /** Record (or update) one session in this device's visit log for the session's month. */
+    async saveVisit(device, session) {
+      const path = `analytics/${new Date(session.start).toISOString().slice(0, 7)}_${device.id}.json`;
+      visitNext.set(path, { device, session });
+      await schedule(path, () => {
+        const { device: d, session: s } = visitNext.get(path);
+        const v = mergeVisits(null, { device: d, sessions: [s] }, visits.get(path));
+        visits.set(path, v);
+        return v;
+      }, 0);
+    },
+
+    /** Every device's visit logs from the month of `since` on. → [{ device, sessions }] */
+    async loadVisits(since = 0) {
+      const res = await request('GET', 'analytics');
+      if (res.status === 404) return [];
+      if (!res.ok) throw fail(`GET analytics: ${res.status}`, res.status);
+      const month = new Date(since).toISOString().slice(0, 7);
+      const list = (await res.json()).filter((f) => f.type === 'file' && /^\d{4}-\d{2}_[\w-]+\.json$/.test(f.name) && f.name.slice(0, 7) >= month);
+      const out = [];
+      for (let i = 0; i < list.length; i += 6) {
+        const got = await Promise.all(list.slice(i, i + 6).map((f) => read(f.path).catch(() => null)));
+        got.forEach((v, j) => {
+          if (!v) return;
+          const path = list[i + j].path;
+          // read() moved this file's sha to the remote copy: fold that copy into ours before the next write
+          visits.set(path, mergeVisits(null, visits.get(path), v));
+          out.push(v);
+        });
+      }
+      return out;
     },
 
     /** Setup check: proves the token can write to the repo. */

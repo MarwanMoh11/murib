@@ -5,6 +5,7 @@
 (function () {
 'use strict';
 const C = window.MuribCore;
+const AN = window.MuribAnalytics;
 
 // ───────────── utils ─────────────
 const $ = (s, r = document) => r.querySelector(s);
@@ -88,6 +89,8 @@ function normProfile(p) {
 // ───────────── Store: injected at boot() (platform store, or the mock below) ─────────────
 // Interface: init, listTexts, loadText, saveTextMeta, saveChunk, deleteText, loadProfile, saveProfile, loadSrs, saveSrs.
 let Store = null;
+// Visit and usage tracker (src/analytics.js); writes through Store.saveVisit, never blocks the UI.
+let Track = null;
 
 /** Serialises writes per key (latest wins), debounces if asked, tracks saving / failed state for the UI. */
 const Saver = (() => {
@@ -176,8 +179,39 @@ function makeMockStore() {
     async saveProfile(p) { await lag(); mem.profile = clone(p); persist(); },
     async loadSrs() { return mem.srs && mem.srs.cards ? clone(mem.srs) : defaultSrs(); },
     async saveSrs(s) { await lag(); mem.srs = clone(s); persist(); },
+    async saveVisit(device, session) {
+      const v = mem.visits || (mem.visits = demoVisits());
+      const k = device.id; const f = v[k] || (v[k] = { device, sessions: [] });
+      f.device = clone(device); f.sessions = f.sessions.filter((x) => x.id !== session.id).concat([clone(session)]); persist();
+    },
+    async loadVisits() { await lag(); return clone(Object.values(mem.visits || (mem.visits = demoVisits()))); },
     persistent: () => ok,
   };
+}
+
+/** #mock only: a few made-up visitors so the dashboard has something to show. */
+function demoVisits() {
+  const day = 864e5; const t0 = now();
+  const people = [
+    { id: 'demo1phone', name: 'Sara', os: 'iPhone', browser: 'Safari', type: 'phone' },
+    { id: 'demo2lapto', name: 'Youssef', os: 'Windows', browser: 'Chrome', type: 'desktop' },
+    { id: 'demo3table', name: '', os: 'Android', browser: 'Chrome', type: 'tablet' },
+  ];
+  const out = {};
+  people.forEach((d, pi) => {
+    const sessions = [];
+    for (let i = 0; i < 9 - pi * 3; i++) {
+      const start = t0 - (i * (2 + pi) + pi) * day - ((pi * 7 + i * 5) % 12) * 36e5;
+      const active = (6 + ((i * 7 + pi * 3) % 25)) * 6e4;
+      sessions.push({ id: `demo${pi}s${i}`, start, last: start + active + 3e5, active, unlock: i % 3 ? 'remembered' : 'password',
+        views: { library: 2 + (i % 3), 'text:sent': 3 + i, 'text:read': i % 4, 'text:words': 1 + (i % 2), review: pi === 1 ? 0 : 2 },
+        acts: { openText: 2 + (i % 3), word: 5 + i * 2, rvRate: pi === 1 ? 0 : 12 + i, chatSend: i % 3, ntAnalyze: i % 4 ? 0 : 1 },
+        ai: { 'analyze:fast': { n: i % 4 ? 0 : 6, err: 0, ms: 9e4, in: 42000, out: 18000 }, 'chat:fast': { n: i % 3, err: 0, ms: 8000, in: 3100 * (i % 3), out: 600 * (i % 3) } },
+        texts: ['sample'] });
+    }
+    out[d.id] = { device: Object.assign({ lang: 'ar', tz: 'Africa/Cairo', screen: '' }, d), sessions };
+  });
+  return out;
 }
 
 // ───────────── AI: wraps the injected backend (platform ai, or the mock) ─────────────
@@ -203,6 +237,12 @@ const AI = (() => {
       pump();
     });
   }
+  // Times one backend call and records it with its token usage; cancelled calls are not counted.
+  function tracked(task, tier, call) {
+    const t0 = now(); let usage = null;
+    const done = (ok) => { if (Track) Track.ai(task, tier, { ok, ms: now() - t0, usage }); };
+    return call((u) => { usage = u; }).then((v) => { done(true); return v; }, (e) => { if (!(e && e.code === 'cancelled')) done(false); throw e; });
+  }
   return {
     attach(b) { ext = b; lim = null; },
     available() { return !!ext; },
@@ -220,14 +260,14 @@ const AI = (() => {
       if (o.fresh) r.fresh = true;
       if (o.images && o.images.length) r.images = o.images;
       if (o.tag && S.mock) r.tag = o.tag; // mock-only routing hint
-      return qrun(() => ext.json(prompt, r), o.signal, o.priority);
+      return qrun(() => tracked(r.task || 'analyze', r.tier, (onUsage) => ext.json(prompt, Object.assign(r, { onUsage }))), o.signal, o.priority);
     },
     stream(turns, o = {}) {
       if (!ext) return Promise.reject({ code: 'sampling_disabled', message: 'unavailable' });
       const r = { task: 'chat', tier: o.tier || 'smart' };
       if (o.signal) r.signal = o.signal;
       if (o.onText) r.onText = o.onText;
-      return qrun(() => ext.stream(turns, r), o.signal, true);
+      return qrun(() => tracked('chat', r.tier, (onUsage) => ext.stream(turns, Object.assign(r, { onUsage }))), o.signal, true);
     },
   };
 })();
@@ -335,6 +375,7 @@ const S = {
   texts: [], ui: { showNum: true, tint: true, wf: 'all', dedupe: false, openParas: {}, tab: {} },
   sheet: null, chats: {}, ctrls: {}, live: new Set(), reviewing: new Set(), reviewErr: {},
   nt: null, rv: null, quiz: null, grade: {}, confirm: null, toastMsg: '',
+  st: { range: 30, who: '', files: null, loading: false, err: '' },
 };
 
 const tierOf = () => S.profile.settings.tier;
@@ -1102,17 +1143,126 @@ function viewQuizRoute() {
 }
 
 // ───────────── render ─────────────
+// ───────────── visits & usage: the owner's dashboard, in English (LTR) ─────────────
+const VIEW_LABEL = { library: 'Library', new: 'New text', 'text:sent': 'Sentences', 'text:read': 'Reading', 'text:words': 'Words', 'text:tr': 'Translation', 'text:sum': 'Summary', 'text:prac': 'Practice', 'prac:grade': 'Grade my translation', 'prac:quiz': 'I\'rab quiz', quiz: 'I\'rab quiz', review: 'Review', 'review:cards': 'Flashcard session', stats: 'Analytics' };
+const AI_LABEL = { ocr: 'Photo reading', overview: 'Overview & summary', analyze: 'Sentence analysis', review: 'Deep check', grade: 'Translation grading', chat: 'Ask Claude' };
+const TIER_LABEL = { fast: 'Haiku', smart: 'Sonnet' };
+const ACT_LABEL = { openText: 'Texts opened', word: 'Word lookups', rvRate: 'Flashcards reviewed', quizPick: 'Quiz answers', chatSend: 'Questions to Claude', ntAnalyze: 'New texts', ntRead: 'Photo reads', gradeGo: 'Translations graded', review: 'Sentence checks', copyTr: 'Translations copied', copyAll: 'Full translations copied', copyWords: 'Word lists copied', delYes: 'Texts deleted' };
+const DAY_MS = 864e5;
+const dayStart = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
+const fmtNum = (n) => { try { return new Intl.NumberFormat('en', n >= 10000 ? { notation: 'compact', maximumFractionDigits: 1 } : {}).format(n); } catch (e) { return String(n); } };
+const count = (n, one, many) => `${fmtNum(n)} ${n === 1 ? one : many || one + 's'}`;
+const fmtDur = (ms) => { const m = Math.round((ms || 0) / 6e4); if (m < 1) return '< 1 min'; if (m < 60) return `${m} min`; return `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ''}`; };
+const fmtLoc = (ms, o, f) => { try { return new Date(ms)[f]('en-GB', o); } catch (e) { return new Date(ms).toISOString().slice(0, 16).replace('T', ' '); } };
+const fmtDay = (ms) => fmtLoc(ms, { weekday: 'short', day: 'numeric', month: 'short' }, 'toLocaleDateString');
+function fmtWhen(ms) {
+  const t = fmtLoc(ms, { hour: '2-digit', minute: '2-digit' }, 'toLocaleTimeString'); const today = dayStart(now());
+  if (ms >= today) return `Today ${t}`;
+  if (ms >= today - DAY_MS) return `Yesterday ${t}`;
+  return `${fmtDay(ms)} ${t}`;
+}
+const isThisDevice = (d) => !!(Track && d && d.id === Track.device().id);
+const deviceLine = (d) => (d ? `${d.os} · ${d.browser}` : '');
+// Names are data in any script: <bdi> keeps an Arabic name from reordering the English around it.
+const whoName = (d) => (d && d.name ? `<bdi>${esc(d.name)}</bdi>` : `Unnamed #${esc(String((d && d.id) || '').slice(0, 4))}`);
+function viewName() {
+  const r = S.route;
+  if (r.name === 'text') { const tab = S.ui.tab[r.id] || 'sent'; return tab === 'prac' && S.ui.prac ? 'prac:' + S.ui.prac : 'text:' + tab; }
+  if (r.name === 'review') return S.rv && S.rv.active ? 'review:cards' : 'review';
+  return r.name;
+}
+// The owner's dashboard has no link anywhere in the app: it opens with #analytics in the URL
+// (#mock&analytics in the demo). Leaving it drops the marker so a reload is the normal app again.
+const wantsStats = () => /analytics/.test(location.hash);
+function openStats() { S.sheet = null; renderSheet(); S.st.who = ''; go('stats'); loadStats(); }
+async function loadStats() {
+  const st = S.st; if (st.loading) return;
+  if (!Store || !Store.loadVisits) { st.files = []; rr(); return; }
+  st.loading = true; st.err = ''; rr();
+  try { st.files = await Store.loadVisits(now() - 92 * DAY_MS); }
+  catch (e) { st.err = e && e.code === 'storage_auth' ? 'The GitHub token has no access to the data repo, or it has expired.' : 'Could not load the visit log from GitHub. Check the connection and try again.'; }
+  st.loading = false; rr();
+}
+function statsData() {
+  const st = S.st; const files = (st.files || []).slice();
+  const live = Track && Track.session(); // this visit, including what is not saved yet
+  if (live) files.push({ device: Track.device(), sessions: [live] });
+  const to = now();
+  return AN.summarize(files, { from: dayStart(to) - (st.range - 1) * DAY_MS, to, who: st.who });
+}
+/** rows: [key, value, extra]; label/sub return HTML. */
+function hbars(rows, label, sub) {
+  if (!rows.length) return '<p class="muted">Nothing yet.</p>';
+  const max = Math.max(...rows.map((r) => r[1]), 1);
+  return `<div class="hbars">${rows.map(([k, n, extra]) => `<div class="hb"><span class="hb-l">${label(k)}${sub ? `<small>${sub(k, extra)}</small>` : ''}</span><span class="hb-t"><i style="width:${Math.max(2, (n / max) * 100).toFixed(1)}%"></i></span><span class="hb-v num">${fmtNum(n)}</span></div>`).join('')}</div>`;
+}
+function vbars(cols, aria, axis) {
+  const max = Math.max(...cols.map((c) => c.n), 1); const k = cols.length;
+  const bars = cols.map((c, i) => {
+    const edge = i < k * 0.2 ? ' e-s' : i >= k * 0.8 ? ' e-e' : '';
+    return `<span class="vb${edge}${c.on ? ' on' : ''}" data-tip="${esc(c.tip)}">${c.n ? `<i style="height:${Math.max(3, (c.n / max) * 100).toFixed(1)}%"></i>` : ''}</span>`;
+  }).join('');
+  return `<div class="vbars${k > 40 ? ' dense' : ''}"><div class="vb-plot" role="img" aria-label="${esc(aria)}">${bars}</div><div class="vb-ax" aria-hidden="true">${axis.map((a) => `<span>${esc(a)}</span>`).join('')}</div></div>`;
+}
+function sessionRow(x) {
+  const views = Object.entries(x.views || {}).filter(([k]) => k !== 'stats').sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k]) => VIEW_LABEL[k] || k);
+  const ai = Object.values(x.ai || {}).reduce((n, a) => n + (a.n || 0), 0);
+  const cards = (x.acts && x.acts.rvRate) || 0; const made = (x.acts && x.acts.ntAnalyze) || 0; const nt = (x.texts || []).length;
+  const tags = [...views, ai ? count(ai, 'Claude call') : '', cards ? count(cards, 'flashcard') : '', made ? count(made, 'new text') : '',
+    nt ? `${count(nt, 'text')} opened` : '', x.unlock === 'password' ? 'password unlock' : ''].filter(Boolean);
+  return `<li class="st-sess"><div class="st-sess-h"><b>${whoName(x.device)}</b><span class="muted num">${esc(fmtWhen(x.start))} · ${esc(fmtDur(x.active))}</span></div>
+    <div class="st-tags">${tags.map((t) => `<span class="pill">${esc(t)}</span>`).join('')}</div></li>`;
+}
+function viewStats() {
+  const st = S.st;
+  const wrap = (html) => `<div class="stats-en" dir="ltr" lang="en">${html}</div>`;
+  const bar = `<div class="sh-bar"><button class="ibtn back" id="st-back" data-act="go" data-to="library" aria-label="Back to library">${ICON.back}</button><h1>Analytics</h1>
+    <button class="btn ghost sm st-refresh" id="st-refresh" data-act="stRefresh" ${st.loading ? 'disabled' : ''}>${st.loading ? 'Refreshing…' : 'Refresh'}</button></div>`;
+  if (!st.files && st.err) return wrap(bar + `<div class="card pad stack"><p class="err" role="alert">${esc(st.err)}</p><button class="btn" data-act="stRefresh">Try again</button></div>`);
+  if (!st.files) return wrap(bar + '<div class="skel pad"><i></i><i></i><span>Loading the visit log…</span></div>');
+  const d = statsData(); const T = d.totals;
+  const range = `<div class="seg sm" role="group" aria-label="Period">${[7, 30, 90].map((v) => `<button class="${st.range === v ? 'on' : ''}" data-act="stRange" data-v="${v}" aria-pressed="${st.range === v}">${v} days</button>`).join('')}</div>`;
+  const whoV = st.who && d.visitors.find((v) => v.key === st.who);
+  const filter = st.who ? `<div class="st-filter card"><span>Showing one visitor: <b>${whoV ? whoName(whoV.device) : ''}</b></span><button class="btn ghost sm" data-act="stWho" data-k="">Show everyone</button></div>` : '';
+  const kpi = (n, l, sub) => `<div class="kpi card"><span class="kpi-n num">${n}</span><span class="kpi-l">${l}</span>${sub ? `<small class="muted">${sub}</small>` : ''}</div>`;
+  const kpis = `<div class="kpis">${kpi(fmtNum(T.visitors), T.visitors === 1 ? 'Visitor' : 'Visitors')}${kpi(fmtNum(T.sessions), T.sessions === 1 ? 'Visit' : 'Visits')}${kpi(esc(fmtDur(T.active)), 'Time in app', T.sessions ? `avg ${esc(fmtDur(T.active / T.sessions))} per visit` : '')}${kpi(fmtNum(T.ai), 'Claude calls', T.ai ? `${fmtNum(T.tokIn + T.tokOut)} tokens${T.aiErr ? ` · ${T.aiErr} failed` : ''}` : '')}</div>`;
+  const today = dayStart(now());
+  const days = vbars(d.days.map((x) => ({ n: x.sessions, on: x.at === today, tip: `${fmtDay(x.at)}: ${count(x.sessions, 'visit')}${x.sessions ? ` · ${count(x.people, 'visitor')} · ${fmtDur(x.active)}` : ''}` })),
+    `Visits per day over the last ${st.range} days, ${T.sessions} in total`, [fmtDay(d.days[0].at), fmtDay(d.days[d.days.length - 1].at)]);
+  const hh = (h) => String(h).padStart(2, '0');
+  const hours = vbars(d.hours.map((n, h) => ({ n, tip: `${hh(h)}:00–${hh(h)}:59: ${count(n, 'visit')}` })), 'Visits by starting hour', ['00:00', '06:00', '12:00', '18:00', '23:00']);
+  const visitors = d.visitors.length ? `<table class="st-tbl"><thead><tr><th>Visitor</th><th class="num">Visits</th><th class="num">Time</th><th>Last visit</th></tr></thead><tbody>${d.visitors.map((v) => `
+    <tr data-act="stWho" data-k="${esc(v.key)}" role="button" tabindex="0"><td><b>${whoName(v.device)}</b>${isThisDevice(v.device) ? ' <span class="pill">this device</span>' : ''}<small>${esc(v.devices.map(deviceLine).join(', '))}</small></td><td class="num">${v.sessions}</td><td class="num">${esc(fmtDur(v.active))}</td><td class="num">${esc(fmtWhen(v.last))}</td></tr>`).join('')}</tbody></table>`
+    : '<p class="muted">No visits in this period.</p>';
+  const list = d.sessions.slice(0, st.more ? 200 : 15);
+  const sessions = d.sessions.length ? `<ul class="st-list">${list.map(sessionRow).join('')}</ul>${d.sessions.length > 15 ? `<button class="btn ghost sm" data-act="stMore">${st.more ? 'Show fewer' : `Show all ${d.sessions.length} visits`}</button>` : ''}` : '';
+  const titleOf = (id) => { const t = getText(id) || (id === 'sample' && sampleText()); return t ? `<bdi>${esc(t.title || 'Untitled')}</bdi>` : 'Deleted text'; };
+  const sec = (h, body, note) => `<section class="sec-wrap"><div class="sec-h"><h2>${h}</h2>${note ? `<span class="muted">${note}</span>` : ''}</div>${body}</section>`;
+  const tiers = Object.entries(d.tiers).filter(([, r]) => r.n).map(([k, r]) => `${TIER_LABEL[k] || k}: ${fmtNum(r.n)}`).join(' · ');
+  return wrap(bar + `<div class="page stats">${range}${filter}${kpis}
+    ${sec('Visits per day', days, 'Hover or tap a bar for details')}
+    ${st.who ? '' : sec('Who visited', visitors, d.visitors.length > 1 ? 'Click a visitor to see only their usage' : '')}
+    ${sessions ? sec('Recent visits', sessions) : ''}
+    ${sec('Most used sections', hbars(d.views.filter(([k]) => k !== 'stats'), (k) => esc(VIEW_LABEL[k] || k)), 'times opened')}
+    ${sec('Claude calls', hbars(d.ai.map(([k, a]) => [k, a.n, a]), (k) => esc(AI_LABEL[k] || k), (k, a) => `${fmtNum(a.in + a.out)} tokens${a.err ? ` · ${a.err} failed` : ''}`), esc(tiers))}
+    ${sec('What they did', hbars(d.acts.filter(([k]) => ACT_LABEL[k]), (k) => ACT_LABEL[k]))}
+    ${d.texts.length ? sec('Most opened texts', hbars(d.texts.slice(0, 8), titleOf), 'visits') : ''}
+    ${sec('Time of day', hours, 'by visit start, your local time')}
+    <p class="muted">Only you see this page: nothing in the app links to it, it opens with #analytics at the end of the app's address. Only people who unlock the app with the password are recorded; the log is kept in the private data repo (analytics/ folder). Names come from the optional name field on the lock screen or in Settings. A new visit starts after 30 minutes without activity.</p>
+  </div>`);
+}
 function viewHtml() {
   const r = S.route;
   if (S.bootError) return `<div class="card pad"><p class="err" role="alert">${esc(S.bootError)}</p><button class="btn" id="boot-retry" data-act="bootRetry">أعد المحاولة</button></div>`;
   if (r.name === 'new') return viewNew();
   if (r.name === 'review') return viewReview();
   if (r.name === 'quiz') return viewQuizRoute();
+  if (r.name === 'stats') return viewStats();
   if (r.name === 'text') return viewText(getText(r.id));
   return viewLibrary();
 }
 const routeKey = () => [S.route.name, S.route.id, S.ui.tab[S.route.id], S.nt && S.nt.step, S.ui.prac, S.rv && S.rv.active].join('|');
-let lastKey = '';
+let lastKey = ''; let lastView = '';
 function render() {
   const view = $('#view'); if (!view) return;
   const ae = document.activeElement; let f = null;
@@ -1127,6 +1277,10 @@ function render() {
   updateNav(); renderQbar();
   if (app) app.scrollTop = key === lastKey ? y : 0;
   lastKey = key;
+  if (Track && S.ready && !S.bootError) {
+    const vn = viewName(); const vk = vn + '|' + (S.route.id || '');
+    if (vk !== lastView) { lastView = vk; Track.view(vn, S.route.name === 'text' ? S.route.id : null); }
+  }
   if (f) {
     const el = document.getElementById(f.id);
     if (el) { try { el.focus({ preventScroll: true }); if (f.txt) el.setSelectionRange(f.s, f.e); } catch (e) { /* ignore */ } }
@@ -1155,6 +1309,7 @@ function updateSaveInd() {
 }
 
 function go(name, params) {
+  if (S.route.name === 'stats' && name !== 'stats' && wantsStats()) history.replaceState(null, '', location.href.replace(/[#&]analytics/, ''));
   S.route = Object.assign({ name }, params || {});
   S.sheet = null; renderSheet();
   if (name !== 'text') S.ui.quick = null;
@@ -1228,6 +1383,8 @@ function settingsSheetHtml() {
     <div class="lbl">المظهر</div>
     <div class="seg col2" role="group" aria-label="المظهر">${themeBtn('dark', 'داكن')}${themeBtn('light', 'فاتح')}</div>
     <label class="chk big" for="set-py"><input type="checkbox" id="set-py" data-change="setPinyin" ${st.showPinyin ? 'checked' : ''}><span>إظهار النطق (pinyin) افتراضيًا</span></label>
+    <label class="lbl" for="set-name">اسمك</label>
+    <input class="inp" id="set-name" data-change="setName" maxlength="40" autocomplete="name" value="${esc(AN ? AN.visitorName() : '')}">
     <p class="muted">${storage}</p>
     <p class="muted">${S.known.size} كلمة معروفة</p>${reset}
     ${S.onLock ? `<button class="btn block" id="set-lock" data-act="lock">${ICON.lock}<span>قفل</span></button>` : ''}`;
@@ -1311,6 +1468,10 @@ const ACT = {
     if (S.onLock) S.onLock();
   },
   closeSheet: () => closeSheet(),
+  stRange: (el) => { S.st.range = Number(el.dataset.v) || 30; rr(); },
+  stWho: (el) => { S.st.who = S.st.who === el.dataset.k ? '' : el.dataset.k; rr(); },
+  stMore: () => { S.st.more = !S.st.more; rr(); },
+  stRefresh: () => loadStats(),
   saveRetry: () => { Saver.retry(); updateSaveInd(); },
   bootRetry: () => loadData(),
   // new text
@@ -1434,13 +1595,16 @@ const CHANGE = {
   gradeSel: (el) => { const g = S.grade[S.route.id]; if (el.checked) g.sel.add(el.dataset.sid); else g.sel.delete(el.dataset.sid); rr(); },
   rvFilter: (el) => { S.rv.filter = el.value; rr(); },
   setPinyin: (el) => { S.profile.settings.showPinyin = el.checked; saveProfile(); rr(); },
+  setName: (el) => { if (Track) Track.setName(el.value); else if (AN) AN.setVisitorName(el.value); },
 };
 function bindEvents() {
   document.addEventListener('click', (ev) => {
     const el = ev.target.closest('[data-act]');
     if (!el || el.disabled) return;
-    const fn = ACT[el.dataset.act]; if (fn) fn(el, ev);
+    const fn = ACT[el.dataset.act]; if (fn) { if (Track) Track.act(el.dataset.act); fn(el, ev); }
   });
+  const active = () => { if (Track) Track.activity(); };
+  ['pointerdown', 'keydown', 'scroll'].forEach((t) => document.addEventListener(t, active, { capture: true, passive: true }));
   document.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape') {
       if (S.sheet) { closeSheet(); return; }
@@ -1465,8 +1629,9 @@ function bindEvents() {
       if (m.startsWith('gt:')) rr();
     }
   });
-  window.addEventListener('pagehide', () => Saver.flush());
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') Saver.flush(); });
+  window.addEventListener('hashchange', () => { if (wantsStats() && S.ready && S.route.name !== 'stats') openStats(); });
+  window.addEventListener('pagehide', () => { Saver.flush(); if (Track) Track.flush(); });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') { Saver.flush(); if (Track) Track.flush(); } });
 }
 
 // ───────────── boot ─────────────
@@ -1497,6 +1662,10 @@ async function boot(opts) {
   Object.values(S.ctrls).forEach((c) => c.abort());
   Saver.reset(); AI.attach(opts.ai || null); Store = opts.store;
   S.mode = opts.mode || ''; S.mock = S.mode === 'mock'; S.onLock = typeof opts.onLock === 'function' ? opts.onLock : null;
+  if (Track) Track.flush();
+  Track = AN ? AN.createTracker({ save: (d, s) => (Store && Store.saveVisit ? Store.saveVisit(d, s) : null) }) : null;
+  if (Track) Track.start({ unlock: opts.unlock || S.mode });
+  S.st = { range: 30, who: '', files: null, loading: false, err: '' }; lastView = '';
   S.route = { name: 'library' }; S.sheet = null; S.nt = null; S.rv = null; S.quiz = null; S.chats = {}; S.grade = {}; S.ctrls = {}; S.live = new Set();
   S.confirm = null; S.ui.quick = null; S.ui.prac = null;
   if (restoreDraft()) S.route = { name: 'new' };
@@ -1508,9 +1677,10 @@ async function boot(opts) {
   updateSaveInd();
   await AI.loadLimits();
   await loadData();
+  if (wantsStats()) openStats();
 }
 
 // busy/settle let the shell finish paid AI work and pending saves before it locks.
-window.MuribApp = { boot, busy: () => AI.busy(), settle: () => Saver.settle() };
+window.MuribApp = { boot, busy: () => AI.busy(), settle: () => Promise.all([Saver.settle(), Track ? Track.flush() : null]) };
 if (/mock/.test(location.hash)) boot({ ai: makeMockAI(), store: makeMockStore(), mode: 'mock', onLock: null });
 })();

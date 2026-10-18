@@ -416,6 +416,50 @@ rt { display: block; font: 400 10.5px/1.2 var(--f-py); color: var(--ink-2); }
 body.sheet-open #app { overflow: hidden; }
 .sheet-body, #chat-msgs { overscroll-behavior: contain; }
 
+/* visits & usage: the owner's dashboard, English and LTR; one quiet ink series, colour stays reserved for grammar */
+.stats-en .back .ic { transform: scaleX(-1); }
+.stats { gap: 24px; }
+.sh-bar .st-refresh { margin-inline-start: auto; }
+.st-filter { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 6px 6px 16px; font-size: 14px; }
+.kpis { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+@media (min-width: 640px) { .kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.kpi { padding: 14px 16px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.kpi-n { font: 700 24px/1.3 var(--f-display); }
+.kpi-l { font-size: 14px; font-weight: 500; }
+.kpi small { font-size: 12px; line-height: 1.5; }
+.vbars { --bar: color-mix(in srgb, var(--ink) 55%, var(--surface)); }
+.vb-plot { display: flex; align-items: stretch; gap: 2px; height: 120px; border-bottom: 1px solid var(--line-2); }
+.vbars.dense .vb-plot { gap: 1px; }
+.vb { position: relative; flex: 1; min-width: 0; display: flex; align-items: flex-end; }
+.vb i { display: block; width: 100%; background: var(--bar); border-radius: 4px 4px 0 0; }
+.vbars.dense .vb i { border-radius: 2px 2px 0 0; }
+.vb.on i, .vb:hover i { background: var(--ink); }
+.vb:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); border-radius: 4px 4px 0 0; }
+.vb:hover::after { content: attr(data-tip); position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%); z-index: 3; white-space: nowrap; background: var(--ink); color: var(--on-ink); font-size: 12px; line-height: 1.5; padding: 4px 8px; border-radius: 6px; pointer-events: none; }
+.vb.e-s:hover::after { left: 0; transform: none; }
+.vb.e-e:hover::after { left: auto; right: 0; transform: none; }
+.vb-ax { display: flex; justify-content: space-between; gap: 8px; margin-top: 6px; font-size: 11.5px; color: var(--ink-2); }
+.hbars { display: grid; gap: 10px; }
+.hb { display: grid; grid-template-columns: minmax(7em, 36%) 1fr auto; align-items: center; gap: 12px; }
+.hb-l { font-size: 14px; line-height: 1.45; min-width: 0; overflow-wrap: anywhere; }
+.hb-l small { display: block; font-size: 12px; color: var(--ink-2); }
+.hb-t i { display: block; height: 10px; background: color-mix(in srgb, var(--ink) 55%, var(--surface)); border-radius: 0 4px 4px 0; }
+.hb-v { font-size: 14px; font-weight: 600; min-width: 2.5em; text-align: right; }
+.st-tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
+.st-tbl th { text-align: start; font-weight: 500; font-size: 12.5px; color: var(--ink-2); padding: 0 8px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.st-tbl td { padding: 10px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.st-tbl th:first-child, .st-tbl td:first-child { padding-inline-start: 0; }
+.st-tbl td.num { white-space: nowrap; }
+.st-tbl td small { display: block; font-size: 12px; line-height: 1.5; color: var(--ink-2); }
+.st-tbl tbody tr { cursor: pointer; }
+.st-tbl tbody tr:hover td { background: var(--surface-2); }
+.st-tbl .pill { font-size: 11px; padding: 0 8px; }
+.st-list { list-style: none; padding: 0; }
+.st-sess { display: grid; gap: 6px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.st-sess-h { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; }
+.st-sess-h .muted { font-size: 13px; }
+.st-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+
 /* lock + setup (markup lives in src/platform/main.js) */
 .lk { min-height: 100vh; min-height: 100dvh; padding: 96px max(24px, env(safe-area-inset-right, 0px)) 32px max(24px, env(safe-area-inset-left, 0px)); background: var(--bg); color: var(--ink); font-family: var(--f-ui); font-size: 15px; }
 .lk-card { width: 100%; max-width: 420px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }

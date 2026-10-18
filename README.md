@@ -13,4 +13,5 @@ npm run build        # dist/platform.js + docs/index.html
 - `src/app.js`, `src/styles.css`, `src/index.html` — the app
 - `src/platform/` — lock/setup screens, Anthropic backend, GitHub storage, vault
 - `docs/index.html#mock` — offline demo with fake AI, no keys needed
+- `#analytics` — your visits & usage dashboard (not linked anywhere in the app; `#mock&analytics` for the demo). Visit logs live in the data repo under `analytics/`.
 - First run: open the site with `#setup` (or with no `config.enc.json`) to create the encrypted config.
